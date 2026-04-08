@@ -60,7 +60,7 @@ sap-vision-agent/
 
    # Ollama Vision Configuration
    OLLAMA_URL="http://YOUR_OLLAMA_IP:11434/api/generate"
-   OLLAMA_MODEL="gemma:2b" # Or whichever vision model you are using
+   OLLAMA_MODEL="gemma4:e2b" # Or whichever vision model you are using
 
    # Logging Preferences
    LOG_TIMEZONE="America/Edmonton"
