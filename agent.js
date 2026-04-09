@@ -7,16 +7,19 @@ const path = require('path');
 const { log } = require('./helpers/logger');
 const { askVisionAgent } = require('./helpers/vision');
 const { locateInAnyFrame, injectSetOfMark, safeIsEditable } = require('./helpers/dom');
-const { generateSkillScript } = require('./helpers/skills');
+const { readMemory, writeMemory, deleteMemory, purgeAllMemory } = require('./helpers/memory'); 
 const { askHuman } = require('./helpers/human');
+const { getQueueFromSheet, updateSheetStatus } = require('./helpers/sheet');
 
 // --- Configuration ---
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
-const SKILLS_DIR = path.join(__dirname, 'skills');
-if (fs.existsSync(SCREENSHOT_DIR)) fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
-fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+const isDebug = process.env.DEBUG && process.env.DEBUG.toUpperCase() === 'TRUE';
 
-const TARGET_TCODE = "ST22"; 
+// If NOT in DEBUG mode, wipe the screenshots directory completely
+if (!isDebug) {
+    if (fs.existsSync(SCREENSHOT_DIR)) fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
+}
+if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
 log("Starting Modular SAP Vision Agent...");
 
@@ -41,124 +44,139 @@ log("Starting Modular SAP Vision Agent...");
 
         await page.waitForTimeout(3000); 
 
-        // ==========================================
-        // PHASE 1: SKILL EXECUTION & SELF-HEALING
-        // ==========================================
-        let skipVision = false;
-        const skillPath = path.join(SKILLS_DIR, `skill_${TARGET_TCODE.toLowerCase()}.js`);
-        
-        if (fs.existsSync(skillPath)) {
-            log(`🧠 Learned skill found for ${TARGET_TCODE}! Attempting execution...`);
+        const taskQueue = await getQueueFromSheet();
+
+        for (const task of taskQueue) {
+            const targetTCode = task.tcode;
+            const rowIndex = task.rowIndex;
+            const overwrite = task.overwrite;
+
+            log(`\n=========================================`);
+            log(`🚀 INITIATING PROCESS FOR T-CODE: ${targetTCode} (Row ${rowIndex})`);
+            log(`=========================================`);
+
             try {
-                const executeSkill = require(skillPath);
-                await executeSkill(page);
-                await page.waitForLoadState('networkidle');
-                skipVision = true;
-                log(`✅ Skill executed successfully! Bypassing Vision AI.`);
-            } catch (err) {
-                log(`⚠️ Skill failed (SAP UI may have changed). Deleting broken skill and triggering re-learning...`, 'WARN');
-                fs.unlinkSync(skillPath); // Delete the broken skill
-                skipVision = false;       // Fall back to Vision AI
-            }
-        }
-
-        // ==========================================
-        // PHASE 2: VISION AI FALLBACK (If no skill)
-        // ==========================================
-        if (!skipVision) {
-            let screenshotPath = path.join(SCREENSHOT_DIR, 'sap_home_raw.png');
-            let imageBuffer = await page.screenshot({ path: screenshotPath });
-            
-            let prompt = `You are an SAP UI agent. We need to execute transaction code '${TARGET_TCODE}'. Identify the transaction code input field's HTML ID. Respond ONLY in JSON: {"target_box": "<html_id>", "action": "type", "text": "${TARGET_TCODE}"}`;
-            
-            let aiResponse = await askVisionAgent(prompt, imageBuffer);
-            let targetLocator = null;
-            let finalSelector = '';
-
-            // 1. Raw Vision Verification
-            if (aiResponse && aiResponse.target_box) {
-                finalSelector = aiResponse.target_box.includes('=') ? aiResponse.target_box : `id=${aiResponse.target_box}`;
-                targetLocator = await locateInAnyFrame(page, finalSelector);
-                
-                if (!targetLocator) {
-                    log(`Raw vision guessed ID '${aiResponse.target_box}', but it doesn't exist.`, 'WARN');
-                } else if (!await safeIsEditable(targetLocator)) {
-                    log(`Raw vision guessed ID '${aiResponse.target_box}', but it is not an editable text field. Rejecting.`, 'WARN');
-                    targetLocator = null;
+                // MANUAL OVERWRITE CHECK
+                if (overwrite) {
+                    log(`Manual overwrite requested via Google Sheets. Purging memory...`);
+                    purgeAllMemory(targetTCode);
                 }
-            }
 
-            // 2. Set-of-Mark Fallback
-            if (!targetLocator) {
-                log("Engaging Set-of-Mark (SoM) override...");
-                await injectSetOfMark(page);
+                let skipVision = false;
                 
-                screenshotPath = path.join(SCREENSHOT_DIR, 'sap_home_som.png');
-                imageBuffer = await page.screenshot({ path: screenshotPath });
-                
-                prompt = `The SAP screen now has numbered boxes. We need to enter transaction code '${TARGET_TCODE}'. Which numbered box covers the white command input field at the top left? Respond ONLY in JSON: {"target_box": "<number>", "action": "type", "text": "${TARGET_TCODE}"}`;
-                aiResponse = await askVisionAgent(prompt, imageBuffer);
-                
-                if (aiResponse && aiResponse.target_box) {
-                    finalSelector = `[data-som-id="${aiResponse.target_box}"]`;
-                    targetLocator = await locateInAnyFrame(page, finalSelector);
+                // PHASE 1: MEMORY
+                const savedNavSelector = readMemory(targetTCode, 'navigation_field');
+                let targetLocator = null;
+
+                if (savedNavSelector) {
+                    log(`🧠 Memory found for ${targetTCode} navigation! Attempting execution...`);
+                    targetLocator = await locateInAnyFrame(page, savedNavSelector);
                     
-                    if (!targetLocator) {
-                        log(`SoM vision guessed Box [${aiResponse.target_box}], but it doesn't exist.`, 'WARN');
-                    } else if (!await safeIsEditable(targetLocator)) {
-                        log(`SoM vision guessed Box [${aiResponse.target_box}], but it is a button. Rejecting.`, 'WARN');
+                    if (targetLocator && await safeIsEditable(targetLocator)) {
+                        skipVision = true;
+                        log(`✅ Zero-token memory execution successful! Bypassing Vision AI.`);
+                    } else {
+                        log(`⚠️ Stored selector [${savedNavSelector}] failed. Triggering Self-Healing...`, 'WARN');
+                        deleteMemory(targetTCode, 'navigation_field'); 
                         targetLocator = null; 
                     }
                 }
-            }
 
-            // 3. Human-in-the-Loop (HITL)
-            if (!targetLocator) {
-                log("🚨 AI failed to find a valid input field. Pausing for Human-in-the-Loop.", 'WARN');
-                console.log("\n👉 Look at screenshots/sap_home_som.png and find the T-code input box number.");
-                const humanBox = await askHuman("Type the correct box number and press Enter: ");
+                // PHASE 2: AI FALLBACK
+                if (!skipVision) {
+                    let screenshotPath = path.join(SCREENSHOT_DIR, 'sap_home_raw.png');
+                    let imageBuffer = await page.screenshot({ path: screenshotPath });
+                    
+                    let prompt = `You are an SAP UI agent. We need to execute transaction code '${targetTCode}'. Identify the transaction code input field's HTML ID. Respond ONLY in JSON: {"target_box": "<html_id>", "action": "type", "text": "${targetTCode}"}`;
+                    
+                    let aiResponse = await askVisionAgent(prompt, imageBuffer);
+                    let finalSelector = '';
+
+                    if (aiResponse && aiResponse.target_box) {
+                        finalSelector = aiResponse.target_box.includes('=') ? aiResponse.target_box : `id=${aiResponse.target_box}`;
+                        targetLocator = await locateInAnyFrame(page, finalSelector);
+                        if (!targetLocator || !await safeIsEditable(targetLocator)) targetLocator = null;
+                    }
+
+                    if (!targetLocator) {
+                        log("Engaging Set-of-Mark (SoM) override...");
+                        await injectSetOfMark(page);
+                        
+                        screenshotPath = path.join(SCREENSHOT_DIR, 'sap_home_som.png');
+                        imageBuffer = await page.screenshot({ path: screenshotPath });
+                        
+                        prompt = `The SAP screen now has numbered boxes. We need to enter transaction code '${targetTCode}'. Which numbered box covers the white command input field at the top left? Respond ONLY in JSON: {"target_box": "<number>", "action": "type", "text": "${targetTCode}"}`;
+                        aiResponse = await askVisionAgent(prompt, imageBuffer);
+                        
+                        if (aiResponse && aiResponse.target_box) {
+                            finalSelector = `[data-som-id="${aiResponse.target_box}"]`;
+                            targetLocator = await locateInAnyFrame(page, finalSelector);
+                            if (!targetLocator || !await safeIsEditable(targetLocator)) targetLocator = null;
+                        }
+                    }
+
+                    if (!targetLocator) {
+                        log("🚨 AI failed. Pausing for Human-in-the-Loop.", 'WARN');
+                        console.log("\n👉 Look at screenshots/sap_home_som.png and find the T-code input box number.");
+                        const humanBox = await askHuman("Type the correct box number and press Enter: ");
+                        
+                        finalSelector = `[data-som-id="${humanBox.trim()}"]`;
+                        targetLocator = await locateInAnyFrame(page, finalSelector);
+                        if (!targetLocator || !await safeIsEditable(targetLocator)) throw new Error("Human-provided box is invalid.");
+                    }
+
+                    let permanentSelector = finalSelector;
+                    if (finalSelector.includes('data-som-id')) {
+                        const realId = await targetLocator.getAttribute('id');
+                        const realTitle = await targetLocator.getAttribute('title');
+                        if (realId) permanentSelector = `id=${realId}`;
+                        else if (realTitle) permanentSelector = `[title="${realTitle}"]`;
+                    }
+
+                    writeMemory(targetTCode, 'navigation_field', permanentSelector);
+                }
+
+                // EXECUTE NAVIGATION
+                log(`Navigating to ${targetTCode}...`);
+                await targetLocator.fill(targetTCode);
+                await targetLocator.press('Enter');
+                await page.waitForLoadState('networkidle');
+
+                // PHASE 3: PLUGIN
+                const tcodeScriptPath = path.join(__dirname, 'tcodes', `${targetTCode.toLowerCase()}.js`);
                 
-                finalSelector = `[data-som-id="${humanBox.trim()}"]`;
-                targetLocator = await locateInAnyFrame(page, finalSelector);
-                if (!targetLocator) throw new Error("Human-provided box couldn't be found.");
-                if (!await safeIsEditable(targetLocator)) throw new Error("Human-provided box is not editable.");
+                if (fs.existsSync(tcodeScriptPath)) {
+                    log(`Loading application logic module for ${targetTCode}...`);
+                    const runTcodeLogic = require(tcodeScriptPath);
+                    
+                    await runTcodeLogic(page, { 
+                        log, locateInAnyFrame, SCREENSHOT_DIR, path, 
+                        readMemory, writeMemory, deleteMemory, askVisionAgent, askHuman, injectSetOfMark
+                    });
+                } else {
+                    log(`No specific logic script found for ${targetTCode}.`, 'WARN');
+                }
+                
+                // SUCCESS
+                await updateSheetStatus(rowIndex, "Complete");
+
+            } catch (err) {
+                log(`Task ${targetTCode} failed: ${err.message}`, 'ERROR');
+                await updateSheetStatus(rowIndex, `Error: ${err.message}`);
+                log(`Purging memory for ${targetTCode} due to error, to ensure fresh start next run.`, 'WARN');
+                purgeAllMemory(targetTCode);
             }
 
-            // --- Selector Translation (Fixing the Ephemeral ID bug) ---
-            let permanentSelector = finalSelector;
-            if (finalSelector.includes('data-som-id')) {
-                const realId = await targetLocator.getAttribute('id');
-                const realTitle = await targetLocator.getAttribute('title');
-                if (realId) permanentSelector = `id=${realId}`;
-                else if (realTitle) permanentSelector = `[title="${realTitle}"]`;
-            }
-
-            log(`Executing learned navigation to ${TARGET_TCODE}...`);
-            await targetLocator.fill(TARGET_TCODE);
-            await targetLocator.press('Enter');
+            log("Returning to SAP Home Screen for next task...");
+            const backBtn = await locateInAnyFrame(page, '[title="Back"]');
+            if (backBtn) await backBtn.click();
             await page.waitForLoadState('networkidle');
-            
-            // Save the permanent selector, not the temporary SoM ID!
-            generateSkillScript(TARGET_TCODE, permanentSelector);
-        }
-
-        // ==========================================
-        // PHASE 3: DYNAMIC MODULE LOADER
-        // ==========================================
-        const tcodeScriptPath = path.join(__dirname, 'tcodes', `${TARGET_TCODE.toLowerCase()}.js`);
-        
-        if (fs.existsSync(tcodeScriptPath)) {
-            log(`Loading application logic module for ${TARGET_TCODE}...`);
-            const runTcodeLogic = require(tcodeScriptPath);
-            await runTcodeLogic(page, { log, locateInAnyFrame, SCREENSHOT_DIR, path });
-        } else {
-            log(`No specific logic script found for ${TARGET_TCODE}. Ending task.`, 'WARN');
         }
 
     } catch (e) {
         log(`Execution Crash: ${e.stack}`, 'ERROR');
     } finally {
-        log("Task complete. Closing browser.");
+        log("Queue processing complete. Closing browser.");
         await browser.close();
     }
 })();

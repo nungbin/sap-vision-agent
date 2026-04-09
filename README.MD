@@ -4,11 +4,12 @@ An autonomous, self-healing Robotic Process Automation (RPA) agent for SAP WebGU
 
 ## ✨ Key Features
 
-* **🧠 Self-Healing Architecture:** The agent generates its own Playwright "skills" once it learns how to navigate to a specific Transaction Code (T-Code). If SAP changes its UI and the skill breaks, the agent automatically deletes the broken skill and falls back to Vision AI to re-learn the new layout.
-* **👀 Vision AI Fallback:** Integrates with local VLMs (like Gemma or Qwen via Ollama) to visually identify input fields and buttons based on raw screenshots, without relying on hardcoded DOM selectors.
+* **📊 Google Sheets Orchestration:** Acts as the central command. The agent reads a queue of T-Codes to execute directly from a Google Sheet and writes back real-time status updates and timestamps.
+* **🧠 Zero-Token Memory Caching:** Once the agent learns a UI element (like a complex grid or command box), it permanently caches the exact HTML ID into a local JSON memory bank. Future runs execute in milliseconds with zero AI compute cost.
+* **👀 Vision AI Fallback:** Integrates with local VLMs (like Gemma via Ollama) to visually identify input fields and buttons based on raw screenshots if the SAP UI changes and the memory cache breaks.
 * **🎯 Set-of-Mark (SoM) Injection:** If the raw vision prompt fails, the agent automatically injects a numbered bounding-box overlay into the SAP iframe, allowing the AI to easily select the correct UI element by number.
-* **🙋‍♂️ Human-in-the-Loop (HITL):** If the AI completely fails to find a valid, editable input field, the script safely pauses execution and prompts the human via the terminal to provide the correct box number, subsequently learning from the human's input.
-* **🧩 Modular Plugin System:** Pure Orchestrator design. Navigation logic is separated from application logic. Once the agent navigates to a T-Code, it dynamically loads specific execution scripts from the `tcodes/` directory.
+* **🙋‍♂️ Human-in-the-Loop (HITL):** For excessively dense grids that confuse smaller AI models, the script safely pauses execution and prompts the human via the terminal to map the elements once, caching them forever.
+* **🧩 Modular Plugin System:** Navigation logic is separated from business logic. Once the agent navigates to a T-Code, it dynamically loads specific execution scripts from the `tcodes/` directory.
 
 ## 📂 Project Structure
 
@@ -19,14 +20,16 @@ sap-vision-agent/
 │   ├── dom.js            # Omni-frame locators and SoM injection
 │   ├── human.js          # HITL terminal prompts
 │   ├── logger.js         # Timezone-aware, self-cleaning logging
-│   ├── skills.js         # Auto-generates Playwright skill scripts
+│   ├── memory.js         # Zero-token JSON caching and self-healing logic
+│   ├── sheet.js          # Google Sheets API integration
 │   └── vision.js         # API integration with Ollama
 ├── tcodes/               # Application-specific logic plugins
 │   └── st22.js           # Example logic for checking Short Dumps
-├── skills/               # (Auto-generated) Learned navigation scripts
+├── skills/               # (Auto-generated) JSON memory banks for T-Codes
 ├── logs/                 # (Auto-generated) Execution logs
 ├── screenshots/          # (Auto-generated) Current run visuals
 ├── .env                  # Environment configuration (ignored in git)
+├── google-credentials.json # GCP Service Account key (ignored in git)
 └── package.json
 ```
 
@@ -34,8 +37,9 @@ sap-vision-agent/
 
 1. **Node.js** (v18+)
 2. **Playwright** (`npx playwright install chromium`)
-3. **Ollama** running locally or on your network, with a Vision model pulled (e.g., `ollama run gemma4:e2b --keepalive -1m`)
+3. **Ollama** running locally or on your network, with a Vision model pulled.
 4. Access to an **SAP WebGUI** instance.
+5. A **Google Cloud Service Account** with access to a Google Sheet.
 
 ## ⚙️ Installation & Setup
 
@@ -60,7 +64,11 @@ sap-vision-agent/
 
    # Ollama Vision Configuration
    OLLAMA_URL="http://YOUR_OLLAMA_IP:11434/api/generate"
-   OLLAMA_MODEL="gemma4:e2b" # Or whichever vision model you are using
+   OLLAMA_MODEL="gemma4:e2b" 
+
+   # Google Sheets Configuration
+   GOOGLE_SHEET_ID="your_google_sheet_id_here"
+   GOOGLE_APPLICATION_CREDENTIALS="./google-credentials.json"
 
    # Logging Preferences
    LOG_TIMEZONE="America/Edmonton"
@@ -75,25 +83,35 @@ To run the agent, simply execute the orchestrator script:
 node agent.js
 ```
 
-**For verbose debugging (shows raw AI JSON responses):**
+**For displaying more information:**
 ```bash
 VERBOSE=true node agent.js
 ```
 
+**For debugging (preserves screenshots and captures pre-execution form snapshots):**
+```bash
+DEBUG=TRUE node agent.js
+```
+
+*Note: You can force the agent to wipe its memory for a specific T-Code and re-learn the UI by checking the "Overwrite" box in Column B of your Google Sheet!*
+
 ## 🏗️ How to add new T-Codes
 
 The agent is designed to scale effortlessly. To add automation for a new transaction (e.g., `SU01`):
-1. Open `agent.js` and change `const TARGET_TCODE = "SU01";` (or pass it in dynamically).
+1. Add `SU01` to Column A of your Google Sheet.
 2. Create a new file at `tcodes/su01.js`.
-3. Export an asynchronous function that contains your Playwright logic for that specific screen. The Orchestrator will handle the login, the vision navigation, and the self-healing, and will dynamically pass the active `page` object to your new script once the UI is ready!
+3. Export an asynchronous function that contains your Playwright logic for that specific screen. The Orchestrator will handle the login, navigation, and self-healing, and will dynamically pass the active `page` object to your new script once the UI is ready!
 ```
 
-***
+---
 
-### How to push this to GitHub:
-1. `nano README.md` -> Paste the code above -> Save and Exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
-2. Run `git add README.md`
-3. Run `git commit -m "Add project README"`
-4. Run `git push`
+### How to commit and push this to GitHub:
 
-This is an incredible piece of engineering to show off on your profile!
+1. Open your `README.md` file in VS Code.
+2. Paste the updated code above and save the file.
+3. In your terminal, run:
+   ```bash
+   git add README.md
+   git commit -m "Update README with Google Sheets Orchestrator and JSON Memory architecture"
+   git push
+   ```
