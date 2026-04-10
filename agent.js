@@ -13,6 +13,7 @@ const { getQueueFromSheet, updateSheetStatus } = require('./helpers/sheet');
 
 // --- Configuration ---
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
+const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
 const isDebug = process.env.DEBUG && process.env.DEBUG.toUpperCase() === 'TRUE';
 
 // If NOT in DEBUG mode, wipe the screenshots directory completely
@@ -20,6 +21,7 @@ if (!isDebug) {
     if (fs.existsSync(SCREENSHOT_DIR)) fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
 }
 if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 log("Starting Modular SAP Vision Agent...");
 
@@ -150,7 +152,7 @@ log("Starting Modular SAP Vision Agent...");
                     const runTcodeLogic = require(tcodeScriptPath);
                     
                     await runTcodeLogic(page, { 
-                        log, locateInAnyFrame, SCREENSHOT_DIR, path, 
+                        log, locateInAnyFrame, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
                         readMemory, writeMemory, deleteMemory, askVisionAgent, askHuman, injectSetOfMark
                     });
                 } else {
