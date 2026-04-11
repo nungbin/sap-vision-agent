@@ -40,7 +40,6 @@ module.exports = async function(page, helpers) {
         let selector = readSkill(activeTCode, memoryKey);
         let locator = null;
 
-        // --- CHECK CACHED MEMORY ---
         if (selector) {
             let tempLocator = await locateInAnyFrame(page, selector);
             if (tempLocator && await tempLocator.count() > 0) {
@@ -70,7 +69,6 @@ module.exports = async function(page, helpers) {
         log(`Learning UI element: ${humanDescription}...`);
         await injectSetOfMark(page);
 
-        // --- AI VISION GUESS ---
         let boxNum = null;
         
         if (!aiCircuitBreaker) {
@@ -112,7 +110,6 @@ module.exports = async function(page, helpers) {
                 }
             }
             
-            // CIRCUIT BREAKER LOGIC
             if (!isAiGuessValid) {
                 boxNum = null; 
                 aiFailCount++;
@@ -127,13 +124,11 @@ module.exports = async function(page, helpers) {
             log(`(AI Vision skipped due to Circuit Breaker)`);
         }
         
-        // --- HUMAN FALLBACK ---
         if (!boxNum) {
             console.log(`\n👉 Look at the popup browser window to find the box number for: ${humanDescription}`);
             boxNum = await askHuman(`Type the box number and press Enter: `);
         }
 
-        // --- FINALIZE AND SAVE ---
         const finalBox = boxNum.trim();
         usedBoxNumbers.add(finalBox); 
 
@@ -159,7 +154,6 @@ module.exports = async function(page, helpers) {
         writeSkill(activeTCode, memoryKey, permanentSelector);
         usedSelectors.add(permanentSelector); 
 
-        // Cleanup Red Boxes
         const frames = page.frames();
         for (const frame of frames) {
             try {
@@ -177,18 +171,14 @@ module.exports = async function(page, helpers) {
     // 2. FORM EXECUTION
     // ==========================================
     log(`Setting Date Range: ${dateFromStr} to ${dateToStr}`);
-    
     const dateFromLoc = await getFieldLocator('date_from', 'Date from (the first date box)');
     await dateFromLoc.fill(dateFromStr);
-
     const dateToLoc = await getFieldLocator('date_to', 'Date to (the second date box)');
     await dateToLoc.fill(dateToStr);
 
     log(`Setting Time Range: ${timeFromStr} to ${timeToStr}`);
-    
     const timeFromLoc = await getFieldLocator('time_from', 'Time from (the input box that already says 00:00:00)');
     await timeFromLoc.fill(timeFromStr);
-
     const timeToLoc = await getFieldLocator('time_to', 'Time to (the input box that already says 23:59:59)');
     await timeToLoc.fill(timeToStr);
 
@@ -211,10 +201,8 @@ module.exports = async function(page, helpers) {
     await page.waitForTimeout(3000); 
 
     // ==========================================
-    // 3. OMNI-EXTRACTOR (Date-Anchor Row Builder)
+    // 3. DETERMINISTIC ZERO-RESULT CHECK (NEW!)
     // ==========================================
-    log("Extracting and PRE-FILTERING data for speed...");
-    
     const formatter = new Intl.DateTimeFormat('en-CA', {
         timeZone: process.env.LOG_TIMEZONE || 'America/Edmonton',
         year: 'numeric', month: '2-digit', day: '2-digit',
@@ -222,20 +210,50 @@ module.exports = async function(page, helpers) {
         hour12: false
     });
     const timestamp = formatter.format(new Date()).replace(/[^0-9]/g, '');
-    
     const fileName = `${activeTCode}_raw_feed_${timestamp}.txt`; 
     const finalFilePath = path.join(DOWNLOAD_DIR, fileName);
+    const analysisFilePath = path.join(DOWNLOAD_DIR, `${activeTCode}_analysis_${timestamp}.json`);
 
+    log("Checking SAP Status Bar for results...");
+    let zeroResultsFound = false;
+    
+    for (const frame of page.frames()) {
+        try {
+            const statusText = await frame.evaluate(() => {
+                const bodyText = document.body.innerText.toLowerCase();
+                return bodyText;
+            });
+            if (statusText.includes('no short dumps') || statusText.includes('does not contain any data') || statusText.includes('no dumps found')) {
+                zeroResultsFound = true;
+                break;
+            }
+        } catch (e) {}
+    }
+
+    // 🟢 SHORT-CIRCUIT: If status bar says empty, bypass AI completely!
+    if (zeroResultsFound) {
+        log(`ℹ️ SAP Status Bar explicitly confirmed 0 dumps. Bypassing extraction and AI processing...`);
+        fs.writeFileSync(finalFilePath, "STATUS BAR CONFIRMED 0 DUMPS FOR THIS DATE RANGE.");
+        log(`✅ LEAN STRUCTURED FEED SAVED: ${fileName}`);
+        
+        const zeroDumpJson = { dumpsFound: false, count: 0, dumps: [] };
+        fs.writeFileSync(analysisFilePath, JSON.stringify(zeroDumpJson, null, 2));
+        log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
+        
+        return; // Exits the ST22 script instantly
+    }
+
+    // ==========================================
+    // 4. OMNI-EXTRACTOR (Date-Anchor Row Builder)
+    // ==========================================
+    log("Extracting and PRE-FILTERING data for speed...");
     let rawTextFeed = "";
-    const frames = page.frames();
 
-    for (const frame of frames) {
+    for (const frame of page.frames()) {
         try {
             const frameData = await frame.evaluate(() => {
-                // Grab standard text
                 let allText = document.body.innerText || "";
                 
-                // 🟢 CRITICAL FIX: Pull values from SAP's virtual <input> table cells!
                 const inputNodes = document.querySelectorAll('input');
                 const inputValues = Array.from(inputNodes).map(i => i.value).filter(v => v && v.trim().length > 0);
                 if (inputValues.length > 0) {
@@ -247,7 +265,6 @@ module.exports = async function(page, helpers) {
                 let groupedOutput = [];
                 let currentRow = [];
                 
-                // Convert vertical soup into horizontal rows based on Date Anchor
                 for (const line of lines) {
                     if (/\d{2}\/\d{2}\/\d{4}/.test(line)) {
                         if (currentRow.length > 0) groupedOutput.push(currentRow.join(' | '));
@@ -265,24 +282,17 @@ module.exports = async function(page, helpers) {
         } catch (e) {}
     }
 
-    // UNCONDITIONAL SAVE: Always write the file, even if 0 bytes
     fs.writeFileSync(finalFilePath, rawTextFeed);
-
-    if (rawTextFeed.trim().length === 0) {
-        log(`ℹ️ Extracted raw feed is empty. Assuming a 0-dump scenario (Valid). File saved: ${fileName}`);
-    } else {
-        log(`✅ LEAN STRUCTURED FEED SAVED: ${fileName}`);
-    }
+    log(`✅ LEAN STRUCTURED FEED SAVED: ${fileName}`);
 
     // ==========================================
-    // 4. SKILL.MD INJECTION & AI PARSING
+    // 5. SKILL.MD INJECTION & AI PARSING
     // ==========================================
     const skillDirPath = path.join(__dirname, '..', 'skills', activeTCode);
     const skillMdPath = path.join(skillDirPath, 'skill.md');
 
     if (!isTesting && !fs.existsSync(skillMdPath)) {
         log(`Creating default skill.md for ${activeTCode}...`);
-        
         if (!fs.existsSync(skillDirPath)) fs.mkdirSync(skillDirPath, { recursive: true });
 
         const defaultMarkdown = `# DESCRIPTION
@@ -353,7 +363,6 @@ Return a JSON object exactly matching this structure. Do not include markdown fo
         console.log(JSON.stringify(aiAnalysisObj, null, 2)); 
         console.log(`======================================================\n`);
         
-        const analysisFilePath = path.join(DOWNLOAD_DIR, `${activeTCode}_analysis_${timestamp}.json`);
         fs.writeFileSync(analysisFilePath, JSON.stringify(aiAnalysisObj, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
 
