@@ -1,184 +1,147 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 
-// Import Helpers
 const { log } = require('./helpers/logger');
-const { askVisionAgent } = require('./helpers/vision');
-const { locateInAnyFrame, injectSetOfMark, safeIsEditable } = require('./helpers/dom');
-const { readMemory, writeMemory, deleteMemory, purgeAllMemory } = require('./helpers/memory'); 
+const { getQueue, updateRowStatus } = require('./helpers/sheet');
+const { readSkill, writeSkill, purgeSkill } = require('./helpers/skill'); // 🟢 purgeSkill is imported!
+const { locateInAnyFrame, injectSetOfMark } = require('./helpers/dom');
 const { askHuman } = require('./helpers/human');
-const { getQueueFromSheet, updateSheetStatus } = require('./helpers/sheet');
+const { askVisionForBox } = require('./helpers/vision');
 
-// --- Configuration ---
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
 const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
-const isDebug = process.env.DEBUG && process.env.DEBUG.toUpperCase() === 'TRUE';
+if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR);
+if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
 
-// If NOT in DEBUG mode, wipe the screenshots directory completely
-if (!isDebug) {
-    if (fs.existsSync(SCREENSHOT_DIR)) fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
-}
-if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+async function run() {
+    log("==================================================");
+    log("🤖 SAP VISION AGENT: FSM ORCHESTRATOR INITIALIZING");
+    log("==================================================");
 
-log("Starting Modular SAP Vision Agent...");
+    const queue = await getQueue(process.env.GOOGLE_SHEET_ID);
+    if (queue.length === 0) {
+        log("No T-Codes found in the execution queue.");
+        return;
+    }
 
-(async () => {
+    // 🟢 OPTIMAL AI VISION RESOLUTION (896x896 prevents squished text)
     const browser = await chromium.launch({ headless: false });
     const context = await browser.newContext({ viewport: { width: 896, height: 896 } });
     const page = await context.newPage();
 
-    try {
-        log(`Navigating to SAP URL...`, 'DEBUG', true);
-        await page.goto(process.env.SAP_WEBGUI_URL, { waitUntil: 'networkidle', ignoreHTTPSErrors: true });
-        
-        log("Filling login credentials...");
-        const userLoc = await locateInAnyFrame(page, '#sap-user');
-        const passLoc = await locateInAnyFrame(page, '#sap-password');
-        
-        await userLoc.fill(process.env.SAP_USER);
-        await passLoc.fill(process.env.SAP_PASS);
-        await passLoc.press('Enter');
-        await page.waitForLoadState('networkidle');
-        log("Logged in successfully.");
+    log("Logging into SAP WebGUI...");
+    await page.goto(process.env.SAP_WEBGUI_URL);
+    await page.locator('#sap-user').fill(process.env.SAP_USER);
+    await page.locator('#sap-password').fill(process.env.SAP_PASS);
+    await page.keyboard.press('Enter');
+    await page.waitForLoadState('networkidle');
 
-        await page.waitForTimeout(3000); 
+    for (const task of queue) {
+        log(`\n▶️ Processing Row ${task.rowIndex}: [${task.tcode}]`);
+        let currentState = task.skillState;
+        let cycleComplete = false;
 
-        const taskQueue = await getQueueFromSheet();
+        while (!cycleComplete) {
+            const timestamp = new Date().toLocaleString('en-US', { timeZone: process.env.LOG_TIMEZONE });
 
-        for (const task of taskQueue) {
-            const targetTCode = task.tcode;
-            const rowIndex = task.rowIndex;
-            const overwrite = task.overwrite;
-
-            log(`\n=========================================`);
-            log(`🚀 INITIATING PROCESS FOR T-CODE: ${targetTCode} (Row ${rowIndex})`);
-            log(`=========================================`);
-
-            try {
-                // MANUAL OVERWRITE CHECK
-                if (overwrite) {
-                    log(`Manual overwrite requested via Google Sheets. Purging memory...`);
-                    purgeAllMemory(targetTCode);
-                }
-
-                let skipVision = false;
+            if (currentState === 'Needs Training' || currentState === 'Broken') {
+                log(`[FSM STATE: ${currentState.toUpperCase()}] Initiating Targeted AI/Human Training...`);
                 
-                // PHASE 1: MEMORY
-                const savedNavSelector = readMemory(targetTCode, 'navigation_field');
-                let targetLocator = null;
+                // 🟢 INTENTIONAL WIPE: Ensure a clean slate for training phase
+                purgeSkill(task.tcode); 
 
-                if (savedNavSelector) {
-                    log(`🧠 Memory found for ${targetTCode} navigation! Attempting execution...`);
-                    targetLocator = await locateInAnyFrame(page, savedNavSelector);
+                try {
+                    // 🟢 FAST NAVIGATION (URL Injection)
+                    await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
+                    await page.waitForLoadState('networkidle');
+
+                    const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
+                    const executeTCode = require(scriptPath);
                     
-                    if (targetLocator && await safeIsEditable(targetLocator)) {
-                        skipVision = true;
-                        log(`✅ Zero-token memory execution successful! Bypassing Vision AI.`);
-                    } else {
-                        log(`⚠️ Stored selector [${savedNavSelector}] failed. Triggering Self-Healing...`, 'WARN');
-                        deleteMemory(targetTCode, 'navigation_field'); 
-                        targetLocator = null; 
-                    }
-                }
-
-                // PHASE 2: AI FALLBACK
-                if (!skipVision) {
-                    let screenshotPath = path.join(SCREENSHOT_DIR, 'sap_home_raw.png');
-                    let imageBuffer = await page.screenshot({ path: screenshotPath });
-                    
-                    let prompt = `You are an SAP UI agent. We need to execute transaction code '${targetTCode}'. Identify the transaction code input field's HTML ID. Respond ONLY in JSON: {"target_box": "<html_id>", "action": "type", "text": "${targetTCode}"}`;
-                    
-                    let aiResponse = await askVisionAgent(prompt, imageBuffer);
-                    let finalSelector = '';
-
-                    if (aiResponse && aiResponse.target_box) {
-                        finalSelector = aiResponse.target_box.includes('=') ? aiResponse.target_box : `id=${aiResponse.target_box}`;
-                        targetLocator = await locateInAnyFrame(page, finalSelector);
-                        if (!targetLocator || !await safeIsEditable(targetLocator)) targetLocator = null;
-                    }
-
-                    if (!targetLocator) {
-                        log("Engaging Set-of-Mark (SoM) override...");
-                        await injectSetOfMark(page);
-                        
-                        screenshotPath = path.join(SCREENSHOT_DIR, 'sap_home_som.png');
-                        imageBuffer = await page.screenshot({ path: screenshotPath });
-                        
-                        prompt = `The SAP screen now has numbered boxes. We need to enter transaction code '${targetTCode}'. Which numbered box covers the white command input field at the top left? Respond ONLY in JSON: {"target_box": "<number>", "action": "type", "text": "${targetTCode}"}`;
-                        aiResponse = await askVisionAgent(prompt, imageBuffer);
-                        
-                        if (aiResponse && aiResponse.target_box) {
-                            finalSelector = `[data-som-id="${aiResponse.target_box}"]`;
-                            targetLocator = await locateInAnyFrame(page, finalSelector);
-                            if (!targetLocator || !await safeIsEditable(targetLocator)) targetLocator = null;
-                        }
-                    }
-
-                    if (!targetLocator) {
-                        log("🚨 AI failed. Pausing for Human-in-the-Loop.", 'WARN');
-                        console.log("\n👉 Look at screenshots/sap_home_som.png and find the T-code input box number.");
-                        const humanBox = await askHuman("Type the correct box number and press Enter: ");
-                        
-                        finalSelector = `[data-som-id="${humanBox.trim()}"]`;
-                        targetLocator = await locateInAnyFrame(page, finalSelector);
-                        if (!targetLocator || !await safeIsEditable(targetLocator)) throw new Error("Human-provided box is invalid.");
-                    }
-
-                    let permanentSelector = finalSelector;
-                    if (finalSelector.includes('data-som-id')) {
-                        const realId = await targetLocator.getAttribute('id');
-                        const realTitle = await targetLocator.getAttribute('title');
-                        if (realId) permanentSelector = `id=${realId}`;
-                        else if (realTitle) permanentSelector = `[title="${realTitle}"]`;
-                    }
-
-                    writeMemory(targetTCode, 'navigation_field', permanentSelector);
-                }
-
-                // EXECUTE NAVIGATION
-                log(`Navigating to ${targetTCode}...`);
-                await targetLocator.fill(targetTCode);
-                await targetLocator.press('Enter');
-                await page.waitForLoadState('networkidle');
-
-                // PHASE 3: PLUGIN
-                const tcodeScriptPath = path.join(__dirname, 'tcodes', `${targetTCode.toLowerCase()}.js`);
-                
-                if (fs.existsSync(tcodeScriptPath)) {
-                    log(`Loading application logic module for ${targetTCode}...`);
-                    const runTcodeLogic = require(tcodeScriptPath);
-                    
-                    await runTcodeLogic(page, { 
-                        log, locateInAnyFrame, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
-                        readMemory, writeMemory, deleteMemory, askVisionAgent, askHuman, injectSetOfMark
+                    await executeTCode(page, { 
+                        log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
+                        readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
+                        isTesting: false, tcode: task.tcode 
                     });
-                } else {
-                    log(`No specific logic script found for ${targetTCode}.`, 'WARN');
-                }
-                
-                // SUCCESS
-                await updateSheetStatus(rowIndex, "Complete");
 
-            } catch (err) {
-                log(`Task ${targetTCode} failed: ${err.message}`, 'ERROR');
-                await updateSheetStatus(rowIndex, `Error: ${err.message}`);
-                log(`Purging memory for ${targetTCode} due to error, to ensure fresh start next run.`, 'WARN');
-                purgeAllMemory(targetTCode);
+                    log(`✅ Training Complete for ${task.tcode}. Updating checkpoint to TESTING.`);
+                    currentState = 'Testing';
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, 'Training complete. Pending unit test.', timestamp);
+                } catch (error) {
+                    log(`❌ Training Failed for ${task.tcode}: ${error.message}`, "ERROR");
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', error.message, timestamp);
+                    cycleComplete = true; 
+                }
+            } 
+            
+            else if (currentState === 'Testing') {
+                log(`[FSM STATE: TESTING] Executing strict autonomous unit test...`);
+                
+                try {
+                    // 🟢 FAST NAVIGATION (URL Injection)
+                    await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
+                    await page.waitForLoadState('networkidle');
+
+                    const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
+                    const executeTCode = require(scriptPath);
+                    
+                    await executeTCode(page, { 
+                        log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
+                        readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
+                        isTesting: true, tcode: task.tcode 
+                    });
+
+                    log(`🎉 Validation Passed! Promoting ${task.tcode} to PRODUCTION.`);
+                    currentState = 'Production';
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, 'Complete', timestamp);
+                    cycleComplete = true; 
+                } catch (error) {
+                    log(`❌ Unit Test Failed for ${task.tcode}: ${error.message}`, "ERROR");
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Validation Failed: ${error.message}`, timestamp);
+                    cycleComplete = true; 
+                }
             }
 
-            log("Returning to SAP Home Screen for next task...");
-            const backBtn = await locateInAnyFrame(page, '[title="Back"]');
-            if (backBtn) await backBtn.click();
-            await page.waitForLoadState('networkidle');
-        }
+            else if (currentState === 'Production') {
+                log(`[FSM STATE: PRODUCTION] Executing silent autonomous run...`);
+                
+                try {
+                    // 🟢 FAST NAVIGATION (URL Injection)
+                    await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
+                    await page.waitForLoadState('networkidle');
 
-    } catch (e) {
-        log(`Execution Crash: ${e.stack}`, 'ERROR');
-    } finally {
-        log("Queue processing complete. Closing browser.");
-        await browser.close();
+                    const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
+                    const executeTCode = require(scriptPath);
+                    
+                    await executeTCode(page, { 
+                        log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
+                        readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
+                        isTesting: true, tcode: task.tcode 
+                    });
+
+                    log(`✅ Production Run Complete for ${task.tcode}.`);
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, 'Complete', timestamp);
+                    cycleComplete = true;
+                } catch (error) {
+                    // 🟢 NO PURGE HERE! If production crashes, memory stays intact. Self-healing loop will verify fields individually.
+                    log(`💥 Production Run Crashed for ${task.tcode}. Self-healing triggered.`, "ERROR");
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Crashed: ${error.message}`, timestamp);
+                    cycleComplete = true; 
+                }
+            }
+            
+            else {
+                 // Failsafe if the dropdown is somehow empty
+                 log(`⚠️ Unknown State: ${currentState}. Defaulting to Needs Training.`, "WARN");
+                 currentState = 'Needs Training';
+            }
+        }
     }
-})();
+
+    log("Queue processing complete. Closing browser.");
+    await browser.close();
+}
+
+run().catch(console.error);

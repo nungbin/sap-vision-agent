@@ -1,32 +1,41 @@
 # SAP Vision Agent 🤖👁️
 
-An autonomous, self-healing Robotic Process Automation (RPA) agent for SAP WebGUI. Built with Node.js and Playwright, this agent leverages local Vision-Language Models (VLMs) via Ollama to dynamically navigate SAP environments, overcoming the notorious challenge of dynamic/ephemeral HTML IDs.
+An autonomous, self-healing Robotic Process Automation (RPA) agent for SAP WebGUI. Built with Node.js and Playwright, this agent leverages local Vision-Language Models (VLMs) via Ollama to dynamically navigate SAP environments, overcoming the notorious challenge of dynamic/ephemeral HTML IDs. 
+
+This project implements a **Finite State Machine (FSM)** to achieve Level 5 autonomy, allowing the bot to organically train, test, execute, and self-heal without human micromanagement.
 
 ## ✨ Key Features
 
-* **📊 Google Sheets Orchestration:** Acts as the central command. The agent reads a queue of T-Codes to execute directly from a Google Sheet and writes back real-time status updates and timestamps.
-* **🧠 Zero-Token Memory Caching:** Once the agent learns a UI element (like a complex grid or command box), it permanently caches the exact HTML ID into a local JSON memory bank. Future runs execute in milliseconds with zero AI compute cost.
-* **👀 Vision AI Fallback:** Integrates with local VLMs (like Gemma via Ollama) to visually identify input fields and buttons based on raw screenshots if the SAP UI changes and the memory cache breaks.
-* **🎯 Set-of-Mark (SoM) Injection:** If the raw vision prompt fails, the agent automatically injects a numbered bounding-box overlay into the SAP iframe, allowing the AI to easily select the correct UI element by number.
-* **🙋‍♂️ Human-in-the-Loop (HITL):** For excessively dense grids that confuse smaller AI models, the script safely pauses execution and prompts the human via the terminal to map the elements once, caching them forever.
-* **🧩 Modular Plugin System:** Navigation logic is separated from business logic. Once the agent navigates to a T-Code, it dynamically loads specific execution scripts from the `tcodes/` directory.
+* **🎛️ FSM Google Sheets Orchestration:** The FSM is entirely controlled via Google Sheets. Tasks cycle through explicit states:
+  * `Needs Training`: Flushes the memory cache and forces the agent to map the UI using AI/Human logic.
+  * `Testing`: Runs a strict autonomous unit test. If successful, it promotes itself to Production.
+  * `Production`: Silent, lightning-fast execution using zero-token cached memory. 
+  * `Broken`: If a production run crashes (e.g., SAP updates its UI), the bot automatically demotes the task to `Broken` and drops back into training mode on the next run.
+* **🛡️ Multi-Layered Locator Shields:**
+  * **The Ultimate Input Shield:** Actively validates that the AI (or cached memory) selected a typeable `<input>` field, safely rejecting buttons (`<div>`) or labels to prevent fatal crashes.
+  * **The Anti-Duplicate Shield:** Mathematically tracks mapped fields during a session, preventing the AI from accidentally assigning the same UI box to multiple variables.
+* **⚡ AI Circuit Breaker:** Vision AI is computationally expensive. If the AI guesses an invalid field twice in a row, the bot trips a "circuit breaker," bypassing the VLM entirely to save GPU time and instantly dropping to manual Human-in-the-Loop mode.
+* **🧠 Zero-Token Memory & Granular Self-Healing:** Stores permanent HTML IDs locally (`skill.json`). If a single field breaks, the bot does *not* suffer from "amnesia" (wiping the whole file). It surgically re-learns only the broken field, preserving the rest of its memory.
+* **🎯 Set-of-Mark (SoM) Injection:** If the cache misses, the agent injects a numbered bounding-box overlay into the SAP iframe, allowing the AI or Human to select the correct UI element by number.
+* **🙋‍♂️ Human-in-the-Loop (HITL):** Safely pauses execution and prompts the human via the terminal to map elements if the AI circuit breaker trips.
+* **📊 Date-Anchor ALV Scraper & Auto-Skill Analysis:** Flattens SAP's vertically-rendered `input readonly` ALV grids into perfect horizontal rows. It then dynamically generates and injects a `skill.md` prompt, using a secondary text LLM to instantly audit and output pure JSON business data.
 
 ## 📂 Project Structure
 
 ```text
 sap-vision-agent/
-├── agent.js              # The main Orchestrator script
+├── agent.js              # The main FSM Orchestrator script
 ├── helpers/              # Core utilities
 │   ├── dom.js            # Omni-frame locators and SoM injection
 │   ├── human.js          # HITL terminal prompts
 │   ├── logger.js         # Timezone-aware, self-cleaning logging
-│   ├── memory.js         # Zero-token JSON caching and self-healing logic
-│   ├── sheet.js          # Google Sheets API integration
-│   └── vision.js         # API integration with Ollama
+│   ├── memory.js         # JSON caching logic (readSkill, writeSkill, purgeSkill)
+│   ├── sheet.js          # Google Sheets API FSM integration
+│   └── vision.js         # Optimized Ollama Vision API requests
 ├── tcodes/               # Application-specific logic plugins
 │   └── st22.js           # Example logic for checking Short Dumps
-├── skills/               # (Auto-generated) JSON memory banks for T-Codes
-├── logs/                 # (Auto-generated) Execution logs
+├── skills/               # (Auto-generated) Memory banks and Skill.md prompts
+├── downloads/            # (Auto-generated) Extracted raw text feeds and JSON analysis
 ├── screenshots/          # (Auto-generated) Current run visuals
 ├── .env                  # Environment configuration (ignored in git)
 ├── google-credentials.json # GCP Service Account key (ignored in git)
@@ -37,7 +46,7 @@ sap-vision-agent/
 
 1. **Node.js** (v18+)
 2. **Playwright** (`npx playwright install chromium`)
-3. **Ollama** running locally or on your network, with a Vision model pulled.
+3. **Ollama** running locally or on your network, with a Vision model (e.g., `gemma4:e2b`) and a Text model (e.g., `gemma`) pulled.
 4. Access to an **SAP WebGUI** instance.
 5. A **Google Cloud Service Account** with access to a Google Sheet.
 
@@ -77,7 +86,7 @@ sap-vision-agent/
 
 ## 💻 Usage
 
-To run the agent, simply execute the orchestrator script:
+To run the agent, simply execute the orchestrator script. The FSM will automatically read the state from the Google Sheet and take the appropriate action (Train, Test, or Execute):
 
 ```bash
 node agent.js
@@ -93,25 +102,10 @@ VERBOSE=true node agent.js
 DEBUG=TRUE node agent.js
 ```
 
-*Note: You can force the agent to wipe its memory for a specific T-Code and re-learn the UI by checking the "Overwrite" box in Column B of your Google Sheet!*
-
 ## 🏗️ How to add new T-Codes
 
-The agent is designed to scale effortlessly. To add automation for a new transaction (e.g., `SU01`):
-1. Add `SU01` to Column A of your Google Sheet.
+The agent is designed to scale effortlessly using a modular plugin system. To add automation for a new transaction (e.g., `SU01`):
+1. Add `SU01` to your Google Sheet queue and set the state to `Needs Training`.
 2. Create a new file at `tcodes/su01.js`.
-3. Export an asynchronous function that contains your Playwright logic for that specific screen. The Orchestrator will handle the login, navigation, and self-healing, and will dynamically pass the active `page` object to your new script once the UI is ready!
+3. Export an asynchronous function that leverages the locator engine (`getFieldLocator`) and ALV scraper logic. The Orchestrator will handle the FSM states, login, fast URL navigation, and self-healing.
 ```
-
----
-
-### How to commit and push this to GitHub:
-
-1. Open your `README.md` file in VS Code.
-2. Paste the updated code above and save the file.
-3. In your terminal, run:
-   ```bash
-   git add README.md
-   git commit -m "Update README with Google Sheets Orchestrator and JSON Memory architecture"
-   git push
-   ```
