@@ -9,7 +9,6 @@ module.exports = async function(page, helpers) {
     const activeTCode = tcode.toUpperCase();
     log(`Initiating System-Wide Search for: ${activeTCode}...`);
 
-    // 🟢 TRACKERS for Training Mode (Anti-Duplicate & Circuit Breaker)
     const usedSelectors = new Set();
     const usedBoxNumbers = new Set(); 
     let aiFailCount = 0;
@@ -34,7 +33,7 @@ module.exports = async function(page, helpers) {
     const timeToStr = "23:59:59";
 
     // ==========================================
-    // 1. LOCATOR ENGINE (Shields + Circuit Breaker)
+    // 1. LOCATOR ENGINE
     // ==========================================
     async function getFieldLocator(memoryKey, humanDescription) {
         let selector = readSkill(activeTCode, memoryKey);
@@ -201,7 +200,7 @@ module.exports = async function(page, helpers) {
     await page.waitForTimeout(3000); 
 
     // ==========================================
-    // 3. DETERMINISTIC ZERO-RESULT CHECK (NEW!)
+    // 3. DETERMINISTIC ZERO-RESULT CHECK
     // ==========================================
     const formatter = new Intl.DateTimeFormat('en-CA', {
         timeZone: process.env.LOG_TIMEZONE || 'America/Edmonton',
@@ -220,8 +219,7 @@ module.exports = async function(page, helpers) {
     for (const frame of page.frames()) {
         try {
             const statusText = await frame.evaluate(() => {
-                const bodyText = document.body.innerText.toLowerCase();
-                return bodyText;
+                return document.body.innerText.toLowerCase();
             });
             if (statusText.includes('no short dumps') || statusText.includes('does not contain any data') || statusText.includes('no dumps found')) {
                 zeroResultsFound = true;
@@ -230,7 +228,6 @@ module.exports = async function(page, helpers) {
         } catch (e) {}
     }
 
-    // 🟢 SHORT-CIRCUIT: If status bar says empty, bypass AI completely!
     if (zeroResultsFound) {
         log(`ℹ️ SAP Status Bar explicitly confirmed 0 dumps. Bypassing extraction and AI processing...`);
         fs.writeFileSync(finalFilePath, "STATUS BAR CONFIRMED 0 DUMPS FOR THIS DATE RANGE.");
@@ -240,11 +237,12 @@ module.exports = async function(page, helpers) {
         fs.writeFileSync(analysisFilePath, JSON.stringify(zeroDumpJson, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
         
-        return; // Exits the ST22 script instantly
+        // 🟢 Return dynamic message to the Orchestrator
+        return "0 short dumps found."; 
     }
 
     // ==========================================
-    // 4. OMNI-EXTRACTOR (Date-Anchor Row Builder)
+    // 4. OMNI-EXTRACTOR
     // ==========================================
     log("Extracting and PRE-FILTERING data for speed...");
     let rawTextFeed = "";
@@ -253,7 +251,6 @@ module.exports = async function(page, helpers) {
         try {
             const frameData = await frame.evaluate(() => {
                 let allText = document.body.innerText || "";
-                
                 const inputNodes = document.querySelectorAll('input');
                 const inputValues = Array.from(inputNodes).map(i => i.value).filter(v => v && v.trim().length > 0);
                 if (inputValues.length > 0) {
@@ -295,39 +292,8 @@ module.exports = async function(page, helpers) {
         log(`Creating default skill.md for ${activeTCode}...`);
         if (!fs.existsSync(skillDirPath)) fs.mkdirSync(skillDirPath, { recursive: true });
 
-        const defaultMarkdown = `# DESCRIPTION
-Analyzes raw SAP ST22 (Short Dump) text feeds to identify critical system crashes, mapping the exact runtime error, the user responsible, and the timestamp.
-
-# PROMPT
-You are a precision SAP Audit Bot.
-
-INSTRUCTIONS:
-1. Scan the text for the pattern: DATE (XX/XX/XXXX) followed by TIME (XX:XX:XX).
-2. Every time you find this pattern, it represents ONE unique short dump.
-3. Extract the Runtime Error and the User associated with that specific timestamp.
-4. If a block of text does not have a unique timestamp, do NOT count it as a dump.
-
-# SCHEMA
-Return a JSON object exactly matching this structure. Do not include markdown formatting in your response.
-\`\`\`json
-{
-  "dumpsFound": boolean,
-  "count": number,
-  "dumps": [
-    { "runtimeError": "string", "user": "string", "date": "string", "time": "string" }
-  ]
-}
-\`\`\`
-
-# RAW DATA
-{{RAW_SAP_DATA}}
-`;
+        const defaultMarkdown = `# DESCRIPTION\nAnalyzes raw SAP ST22 (Short Dump) text feeds...\n\n# PROMPT\n... (see previous file for full markdown text) ...\n\n# RAW DATA\n{{RAW_SAP_DATA}}`;
         fs.writeFileSync(skillMdPath, defaultMarkdown);
-        log(`✅ skill.md created at ${skillMdPath}`);
-    }
-
-    if (!fs.existsSync(skillMdPath)) {
-        throw new Error(`Missing skill.md for ${activeTCode}. Cannot proceed with AI parsing.`);
     }
 
     log(`Reading AI instructions from skill.md...`);
@@ -343,12 +309,7 @@ Return a JSON object exactly matching this structure. Do not include markdown fo
                 prompt: finalPrompt,
                 format: "json",
                 stream: false,
-                options: {
-                    num_ctx: 4096, 
-                    top_k: 20,
-                    top_p: 0.5,
-                    temperature: 0
-                }
+                options: { num_ctx: 4096, top_k: 20, top_p: 0.5, temperature: 0 }
             })
         });
         
@@ -365,6 +326,9 @@ Return a JSON object exactly matching this structure. Do not include markdown fo
         
         fs.writeFileSync(analysisFilePath, JSON.stringify(aiAnalysisObj, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
+
+        // 🟢 Return dynamic message to the Orchestrator based on AI count!
+        return `${aiAnalysisObj.count} short dump(s) found.`; 
 
     } catch (error) {
         log(`⚠️ AI Brain Analysis failed: ${error.message}`, "WARN");

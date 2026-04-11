@@ -15,7 +15,7 @@ const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
 
 const isDebug = process.env.DEBUG && process.env.DEBUG.toUpperCase() === 'TRUE';
 
-// 🟢 Auto-wipe old screenshots on startup if NOT in debug mode
+// Auto-wipe old screenshots on startup if NOT in debug mode
 if (!isDebug && fs.existsSync(SCREENSHOT_DIR)) {
     fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
 }
@@ -34,7 +34,6 @@ async function run() {
         return;
     }
 
-    // 🟢 OPTIMAL AI VISION RESOLUTION (896x896 prevents squished text)
     const browser = await chromium.launch({ headless: false });
     const context = await browser.newContext({ viewport: { width: 896, height: 896 } });
     const page = await context.newPage();
@@ -56,19 +55,17 @@ async function run() {
 
             if (currentState === 'Needs Training' || currentState === 'Broken') {
                 log(`[FSM STATE: ${currentState.toUpperCase()}] Initiating Targeted AI/Human Training...`);
-                
-                // 🟢 INTENTIONAL WIPE: Ensure a clean slate for training phase
                 purgeSkill(task.tcode); 
 
                 try {
-                    // 🟢 FAST NAVIGATION (URL Injection)
                     await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
                     await page.waitForLoadState('networkidle');
 
                     const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
                     const executeTCode = require(scriptPath);
                     
-                    await executeTCode(page, { 
+                    // 🟢 Capture the returned message
+                    const runMessage = await executeTCode(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
                         isTesting: false, tcode: task.tcode 
@@ -76,7 +73,7 @@ async function run() {
 
                     log(`✅ Training Complete for ${task.tcode}. Updating checkpoint to TESTING.`);
                     currentState = 'Testing';
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, 'Training complete. Pending unit test.', timestamp);
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Training complete. Pending unit test.', timestamp);
                 } catch (error) {
                     log(`❌ Training Failed for ${task.tcode}: ${error.message}`, "ERROR");
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', error.message, timestamp);
@@ -94,7 +91,8 @@ async function run() {
                     const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
                     const executeTCode = require(scriptPath);
                     
-                    await executeTCode(page, { 
+                    // 🟢 Capture the returned message
+                    const runMessage = await executeTCode(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
                         isTesting: true, tcode: task.tcode 
@@ -102,7 +100,8 @@ async function run() {
 
                     log(`🎉 Validation Passed! Promoting ${task.tcode} to PRODUCTION.`);
                     currentState = 'Production';
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, 'Complete', timestamp);
+                    // 🟢 Write the dynamic message to the Google Sheet!
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
                     cycleComplete = true; 
                 } catch (error) {
                     log(`❌ Unit Test Failed for ${task.tcode}: ${error.message}`, "ERROR");
@@ -121,17 +120,18 @@ async function run() {
                     const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
                     const executeTCode = require(scriptPath);
                     
-                    await executeTCode(page, { 
+                    // 🟢 Capture the returned message (and fixed isTesting: false)
+                    const runMessage = await executeTCode(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
-                        isTesting: true, tcode: task.tcode 
+                        isTesting: false, tcode: task.tcode 
                     });
 
                     log(`✅ Production Run Complete for ${task.tcode}.`);
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, 'Complete', timestamp);
+                    // 🟢 Write the dynamic message to the Google Sheet!
+                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
                     cycleComplete = true;
                 } catch (error) {
-                    // NO PURGE HERE! If production crashes, memory stays intact. Self-healing loop will verify fields individually later.
                     log(`💥 Production Run Crashed for ${task.tcode}. Self-healing triggered.`, "ERROR");
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Crashed: ${error.message}`, timestamp);
                     cycleComplete = true; 
