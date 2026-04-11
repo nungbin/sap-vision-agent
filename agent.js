@@ -5,15 +5,23 @@ const fs = require('fs');
 
 const { log } = require('./helpers/logger');
 const { getQueue, updateRowStatus } = require('./helpers/sheet');
-const { readSkill, writeSkill, purgeSkill } = require('./helpers/skill'); // 🟢 purgeSkill is imported!
+const { readSkill, writeSkill, purgeSkill } = require('./helpers/skill'); 
 const { locateInAnyFrame, injectSetOfMark } = require('./helpers/dom');
 const { askHuman } = require('./helpers/human');
 const { askVisionForBox } = require('./helpers/vision');
 
 const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
 const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
-if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR);
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
+
+const isDebug = process.env.DEBUG && process.env.DEBUG.toUpperCase() === 'TRUE';
+
+// 🟢 Auto-wipe old screenshots on startup if NOT in debug mode
+if (!isDebug && fs.existsSync(SCREENSHOT_DIR)) {
+    fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
+}
+
+if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 async function run() {
     log("==================================================");
@@ -80,7 +88,6 @@ async function run() {
                 log(`[FSM STATE: TESTING] Executing strict autonomous unit test...`);
                 
                 try {
-                    // 🟢 FAST NAVIGATION (URL Injection)
                     await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
                     await page.waitForLoadState('networkidle');
 
@@ -108,7 +115,6 @@ async function run() {
                 log(`[FSM STATE: PRODUCTION] Executing silent autonomous run...`);
                 
                 try {
-                    // 🟢 FAST NAVIGATION (URL Injection)
                     await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
                     await page.waitForLoadState('networkidle');
 
@@ -125,7 +131,7 @@ async function run() {
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, 'Complete', timestamp);
                     cycleComplete = true;
                 } catch (error) {
-                    // 🟢 NO PURGE HERE! If production crashes, memory stays intact. Self-healing loop will verify fields individually.
+                    // NO PURGE HERE! If production crashes, memory stays intact. Self-healing loop will verify fields individually later.
                     log(`💥 Production Run Crashed for ${task.tcode}. Self-healing triggered.`, "ERROR");
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Crashed: ${error.message}`, timestamp);
                     cycleComplete = true; 
@@ -133,7 +139,6 @@ async function run() {
             }
             
             else {
-                 // Failsafe if the dropdown is somehow empty
                  log(`⚠️ Unknown State: ${currentState}. Defaulting to Needs Training.`, "WARN");
                  currentState = 'Needs Training';
             }
