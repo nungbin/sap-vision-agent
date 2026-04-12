@@ -14,6 +14,9 @@ module.exports = async function(page, helpers) {
     let aiFailCount = 0;
     let aiCircuitBreaker = false;
 
+    // Determine headless state
+    const isHeadless = process.env.HEADLESS ? process.env.HEADLESS.toUpperCase() === 'TRUE' : true;
+
     await page.waitForTimeout(2000); 
 
     const today = new Date();
@@ -114,22 +117,26 @@ module.exports = async function(page, helpers) {
                 boxNum = null; 
                 aiFailCount++;
                 if (aiFailCount >= 1) {
-                    log(`🛑 AI has failed ${aiFailCount} total times on this screen. Tripping Circuit Breaker. Switching to 100% Manual Mode.`, "WARN");
+                    log(`🛑 AI has failed ${aiFailCount} total times on this screen. Tripping Circuit Breaker.`, "WARN");
                     aiCircuitBreaker = true;
                 }
             } 
-            // We removed the 'else { aiFailCount = 0; }' so failures are cumulative!
             
         } else {
             log(`(AI Vision skipped due to Circuit Breaker)`);
         }
         
+        // 🟢 HEADLESS DEGRADATION SHIELD
         if (!boxNum) {
-            console.log(`\n👉 Look at the popup browser window to find the box number for: ${humanDescription}`);
-            boxNum = await askHuman(`Type the box number and press Enter: `);
+            if (isHeadless) {
+                throw new Error("Headless Mode: AI Circuit Breaker Tripped. Cannot invoke Human-in-the-Loop. Aborting task.");
+            } else {
+                console.log(`\n👉 Look at the popup browser window to find the box number for: ${humanDescription}`);
+                boxNum = await askHuman(`Type the box number and press Enter: `);
+            }
         }
 
-        const finalBox = boxNum.trim();
+        const finalBox = boxNum ? boxNum.trim() : "";
         usedBoxNumbers.add(finalBox); 
 
         const tempSelector = `[data-som-id="${finalBox}"]`;
@@ -168,7 +175,7 @@ module.exports = async function(page, helpers) {
     }
 
     // ==========================================
-    // 2. FORM EXECUTION (UPGRADED AI PROMPTS)
+    // 2. FORM EXECUTION
     // ==========================================
     log(`Setting Date Range: ${dateFromStr} to ${dateToStr}`);
     
@@ -182,7 +189,6 @@ module.exports = async function(page, helpers) {
     const timeFromLoc = await getFieldLocator('time_from', 'The first time input box that already contains the text 00:00:00');
     await timeFromLoc.fill(timeFromStr);
     
-    // Hyper-literal prompt for the duplicate Time box
     const timeToLoc = await getFieldLocator('time_to', 'Look at the Time row. Find the SECOND input box in that row. It is under the "to" column.');
     await timeToLoc.fill(timeToStr);
 

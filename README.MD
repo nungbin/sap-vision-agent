@@ -11,17 +11,10 @@ This project implements a **Finite State Machine (FSM)** to achieve Level 5 auto
   * `Testing`: Runs a strict autonomous unit test. If successful, it promotes itself to Production.
   * `Production`: Silent, lightning-fast execution using zero-token cached memory or pure native locators. 
   * `Broken`: If a production run crashes (e.g., SAP updates its UI), the bot automatically demotes the task to `Broken`, captures a phase-specific crash screenshot, and drops back into training mode on the next run.
-* **🛤️ Dynamic URL Routing & Payload Injection:** The Orchestrator automatically parses dynamic headers from Row 1. It seamlessly routes both legacy WebGUI T-Codes (via `&~transaction=`) and direct UI5 URLs, passing the entire row's data as a JSON payload (`taskData`) to your scripts for highly parameterized runs.
-* **🛡️ Multi-Layered Locator Shields:**
-  * **The Ultimate Input Shield:** Actively validates that the AI (or cached memory) selected a typeable `<input>` field, safely rejecting buttons (`<div>`) or labels to prevent fatal crashes.
-  * **DOM Validation Shield:** Detects if a modern framework (like UI5) asynchronously re-renders and destroys target elements while the AI is thinking, safely rejecting the hallucinated target.
-* **⚡ Global AI Circuit Breaker:** Vision AI is computationally expensive. If the AI fails cumulatively across a transaction (e.g., empty guesses, duplicate targets, or targeting vanished DOM elements), the bot trips a global circuit breaker, bypassing the VLM for the rest of the run and dropping to manual Human-in-the-Loop mode.
-* **🧬 Adaptive Phase-Gate Architecture:** Intelligently switches execution strategies based on the target environment:
-  * **Legacy SAP WebGUI:** Uses Set-of-Mark (SoM) visual injection and Vision AI to navigate cluttered, opaque DOMs.
-  * **Modern SAP UI5:** Uses pure native Playwright locators to bypass aggressive asynchronous re-renders and live-validation engines that would otherwise destroy visual SoM boxes.
-* **🧠 Zero-Token Memory & Granular Self-Healing:** Stores permanent HTML IDs locally (`skills/`). If a single field breaks, the bot surgically re-learns only the broken field, preserving the rest of its memory.
-* **🙋‍♂️ Human-in-the-Loop (HITL):** Safely pauses execution and prompts the human via the terminal to map elements if the AI circuit breaker trips.
-* **📊 Auto-Skill Analysis:** Extracts raw structured feeds from SAP and dynamically generates `skill.md` prompts, using a secondary text LLM to instantly audit and output pure JSON business data.
+* **🛤️ Dynamic URL Routing & Payload Injection:** The Orchestrator automatically parses dynamic headers from Row 1. It seamlessly routes both legacy WebGUI T-Codes and direct UI5 URLs, passing the entire row's data as a JSON payload (`taskData`) to your scripts for highly parameterized runs.
+* **🛡️ Multi-Layered Locator Shields:** Actively validates that the AI selected typeable `<input>` fields and detects if a modern framework (like UI5) asynchronously re-renders and destroys target elements while the AI is thinking.
+* **⚡ Global AI Circuit Breaker:** If the AI fails cumulatively across a transaction, the bot trips a global circuit breaker, bypassing the VLM for the rest of the run and dropping to manual Human-in-the-Loop mode (if running interactively) or gracefully aborting (if running headlessly).
+* **🧬 Adaptive Phase-Gate Architecture:** Intelligently switches execution strategies based on the target environment (Legacy Visual AI vs. Modern Native Locators).
 
 ## 📂 Project Structure
 
@@ -30,19 +23,19 @@ sap-vision-agent/
 ├── agent.js              # The main FSM Orchestrator script
 ├── helpers/              # Core utilities
 │   ├── dom.js            # Omni-frame locators and SoM injection
-│   ├── human.js          # HITL terminal prompts
+│   ├── human.js          # HITL terminal prompts & headless failsafes
 │   ├── logger.js         # Timezone-aware, self-cleaning logging
 │   ├── skill.js          # JSON caching logic (readSkill, writeSkill, purgeSkill)
-│   ├── sheet.js          # Google Sheets API Mega-Sheet & Dynamic Header parsing
+│   ├── sheet.js          # Google Sheets API Mega-Sheet parsing
 │   └── vision.js         # Optimized Ollama Vision API requests
 ├── tasks/                # Application-specific logic plugins (Legacy & Modern)
 │   ├── st22.js           # Legacy WebGUI task: AI Vision & Extractor logic
 │   └── ui5_wizard.js     # Modern UI5 task: Phase-Gate & Native Locators
 ├── skills/               # (Auto-generated) Memory banks and Skill.md prompts
 ├── downloads/            # (Auto-generated) Extracted raw text feeds and JSON analysis
-├── screenshots/          # (Auto-generated) Current run visuals & Phase-Gate crash reports
+├── screenshots/          # (Auto-generated) Current run visuals & crash reports
+├── logs/                 # Standard output logs for Headless/Cron execution
 ├── .env                  # Environment configuration (ignored in git)
-├── google-credentials.json # GCP Service Account key (ignored in git)
 └── package.json
 ```
 
@@ -52,21 +45,8 @@ Your Google Sheet drives the Orchestrator. The headers in Row 1 are mapped dynam
 
 | Task Name (Col A) | Skill State (Col B) | Target (Col C) | Complete/Error | Timestamp | Product Type | Product Name | Product Weight |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `st22` | Production | `ST22` | 0 short dumps found. | 4/11/2026, 2:51 PM | | | |
-| `ui5_wizard` | Needs Training | `http://<ip>/index.html` | | | Mobile | TEST_BOT | 999 |
-
-* **Task Name:** Must perfectly match the `.js` filename inside your `tasks/` folder.
-* **Skill State:** Controls the FSM (`Needs Training`, `Testing`, `Production`, `Broken`).
-* **Target:** Drives the browser URL. Can be a legacy T-Code (`ST22`) or a direct URL (`http://...`).
-* **Custom Columns:** Any column headers added after the core operational columns (like *Product Type*, *Product Name*) are instantly accessible in your scripts via `taskData.productType`.
-
-## 🚀 Prerequisites
-
-1. **Node.js** (v18+)
-2. **Playwright** (`npx playwright install chromium`)
-3. **Ollama** running locally or on your network, with a Vision model (e.g., `gemma4:e2b`) and a Text model (e.g., `gemma`) pulled.
-4. Access to an **SAP WebGUI** or **SAP UI5** instance.
-5. A **Google Cloud Service Account** with access to a Google Sheet.
+| `st22` | Production | `ST22` | 0 short dumps found. | 4/12/2026, 7:25 AM | | | |
+| `ui5_wizard` | Production | `http://<ip>/index.html` | Completed | 4/12/2026, 7:25 AM | Mobile | TEST03 | 123 |
 
 ## ⚙️ Installation & Setup
 
@@ -79,6 +59,8 @@ Your Google Sheet drives the Orchestrator. The headers in Row 1 are mapped dynam
 2. **Install dependencies:**
    ```bash
    npm install
+   npx playwright install chromium
+   npx playwright install-deps # Required for headless Linux environments
    ```
 
 3. **Configure Environment Variables:**
@@ -99,31 +81,58 @@ Your Google Sheet drives the Orchestrator. The headers in Row 1 are mapped dynam
 
    # Logging Preferences
    LOG_TIMEZONE="America/Edmonton"
-   LOG_RETENTION_DAYS=7
+   
+   # Execution Mode
+   HEADLESS="TRUE" # Set to FALSE for local development
    ```
 
-## 💻 Usage
+## 💻 Usage & Execution Modes
 
-To run the agent, simply execute the orchestrator script. The FSM will automatically read the state from the Google Sheet, apply dynamic URL routing, and take the appropriate action:
+The bot dynamically adapts to your deployment environment.
+
+### 1. Interactive Mode (Local Development & Training)
+When building new skills or overriding broken ones, run the bot interactively. This pops open the browser, enables Human-in-the-Loop (`askHuman`) terminal prompts, and allows you to watch the agent learn.
 
 ```bash
-node agent.js
+HEADLESS=false VERBOSE=true node agent.js
 ```
 
-**For displaying more information:**
+### 2. Headless Mode (Cloud / Production)
+For unattended batch processing (e.g., SAP BTP or background Linux containers), run the bot headlessly. The agent will automatically safely bypass `askHuman` prompts to prevent infinite hangs and will write all crash diagnostics to the `screenshots/` directory.
+
 ```bash
-VERBOSE=true node agent.js
+HEADLESS=true node agent.js
 ```
 
-**For debugging (preserves screenshots and captures pre-execution form snapshots):**
+## ⏳ Headless Background Scheduling (Crontab-UI)
+
+To run the agent autonomously in a Linux LXC or cloud container, we use `crontab-ui` as our background scheduler.
+
+**1. Install Crontab-UI Globally:**
 ```bash
-DEBUG=TRUE node agent.js
+npm install -g crontab-ui
 ```
+
+**2. Start the Web Dashboard:**
+Bind it to `0.0.0.0` so you can access the dashboard over your local network:
+```bash
+HOST=0.0.0.0 crontab-ui
+```
+*(Access via browser at `http://<your-server-ip>:8000`)*
+
+**3. Configure the Cron Job:**
+Create a new job in the dashboard using absolute paths to ensure the environment initializes correctly. Append the output to a log file:
+* **Command:** `cd /home/YOUR_USER/projects/sap_agent && /usr/bin/node agent.js >> logs/cron.log 2>&1`
+* **Schedule:** `*/5 * * * *` (Every 5 minutes, or schedule it to run once on demand)
+
+**4. Real-Time Log Monitoring:**
+Because the browser is hidden, you can monitor the bot's live thoughts and actions by "tailing" the log file via your SSH terminal:
+```bash
+tail -f /home/YOUR_USER/projects/sap_agent/logs/cron.log
+```
+*(Press `Ctrl + C` to exit the live log viewer).*
 
 ## 🏗️ How to Add New Tasks (T-Codes & UI5)
-
-The agent is designed to scale effortlessly using a modular plugin system. To add automation for a new process (e.g., `SU01` or a custom Fiori App):
-
 1. **Update the Mega-Sheet:** Add a new row to your Google Sheet. Set the *Task Name* (e.g., `su01`), the *Skill State* (`Needs Training`), the *Target* (the T-Code or URL), and any dynamic payload columns you need.
 2. **Create the Script:** Create a new file inside the `tasks/` directory matching the Task Name exactly (e.g., `tasks/su01.js`).
 3. **Build the Logic:** Export an asynchronous function that receives the `page` and `helpers` object. Use `helpers.taskData` to unpack your custom Sheet columns. 

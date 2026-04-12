@@ -15,6 +15,9 @@ const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
 
 const isDebug = process.env.DEBUG && process.env.DEBUG.toUpperCase() === 'TRUE';
 
+// Determine Headless state. Default to true for cloud/cron, allow override via .env
+const isHeadless = process.env.HEADLESS ? process.env.HEADLESS.toUpperCase() === 'TRUE' : true;
+
 // Auto-wipe old screenshots on startup if NOT in debug mode
 if (!isDebug && fs.existsSync(SCREENSHOT_DIR)) {
     fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
@@ -26,6 +29,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 async function run() {
     log("==================================================");
     log("🤖 SAP VISION AGENT: FSM ORCHESTRATOR INITIALIZING");
+    log(`⚙️  MODE: ${isHeadless ? 'HEADLESS (Cloud/Cron)' : 'INTERACTIVE (Local/GUI)'}`);
     log("==================================================");
 
     const queue = await getQueue(process.env.GOOGLE_SHEET_ID);
@@ -34,7 +38,12 @@ async function run() {
         return;
     }
 
-    const browser = await chromium.launch({ headless: false });
+    // 🟢 HEADLESS & CONTAINER SAFE LAUNCH ARGS
+    const browser = await chromium.launch({ 
+        headless: isHeadless,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+    });
+    
     const context = await browser.newContext({ viewport: { width: 896, height: 896 } });
     const page = await context.newPage();
 
