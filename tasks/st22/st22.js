@@ -112,7 +112,6 @@ module.exports = async function(page, helpers) {
                 }
             }
             
-            // GLOBAL CIRCUIT BREAKER LOGIC
             if (!isAiGuessValid) {
                 boxNum = null; 
                 aiFailCount++;
@@ -126,7 +125,6 @@ module.exports = async function(page, helpers) {
             log(`(AI Vision skipped due to Circuit Breaker)`);
         }
         
-        // 🟢 HEADLESS DEGRADATION SHIELD
         if (!boxNum) {
             if (isHeadless) {
                 throw new Error("Headless Mode: AI Circuit Breaker Tripped. Cannot invoke Human-in-the-Loop. Aborting task.");
@@ -178,17 +176,14 @@ module.exports = async function(page, helpers) {
     // 2. FORM EXECUTION
     // ==========================================
     log(`Setting Date Range: ${dateFromStr} to ${dateToStr}`);
-    
     const dateFromLoc = await getFieldLocator('date_from', 'The first date input box located in the top Date row.');
     await dateFromLoc.fill(dateFromStr);
-    
     const dateToLoc = await getFieldLocator('date_to', 'The SECOND date input box in the Date row. It is directly to the right of the first date box. Do not select the bottom input.');
     await dateToLoc.fill(dateToStr);
 
     log(`Setting Time Range: ${timeFromStr} to ${timeToStr}`);
     const timeFromLoc = await getFieldLocator('time_from', 'The first time input box that already contains the text 00:00:00');
     await timeFromLoc.fill(timeFromStr);
-    
     const timeToLoc = await getFieldLocator('time_to', 'Look at the Time row. Find the SECOND input box in that row. It is under the "to" column.');
     await timeToLoc.fill(timeToStr);
 
@@ -248,6 +243,10 @@ module.exports = async function(page, helpers) {
         fs.writeFileSync(analysisFilePath, JSON.stringify(zeroDumpJson, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
         
+        log(`[GATEWAY_ARTIFACT]: ${analysisFilePath}`);
+        // 🚀 NEW: Clean summary for zero results
+        log(`[GATEWAY_SUMMARY]: 🟢 **ST22 Status:** System is clean. 0 short dumps found.`);
+        
         return "0 short dumps found."; 
     }
 
@@ -295,14 +294,12 @@ module.exports = async function(page, helpers) {
     // ==========================================
     // 5. SKILL.MD INJECTION & AI PARSING
     // ==========================================
-    // 🟢 UPDATED PATH: Jump up TWO directories to reach root /skills/
     const skillDirPath = path.join(__dirname, '..', '..', 'skills', activeTCode);
     const skillMdPath = path.join(skillDirPath, 'skill.md');
 
     if (!isTesting && !fs.existsSync(skillMdPath)) {
         log(`Creating default skill.md for ${activeTCode}...`);
         if (!fs.existsSync(skillDirPath)) fs.mkdirSync(skillDirPath, { recursive: true });
-
         const defaultMarkdown = `# DESCRIPTION\nAnalyzes raw SAP ST22 (Short Dump) text feeds...\n\n# PROMPT\n... (see previous file for full markdown text) ...\n\n# RAW DATA\n{{RAW_SAP_DATA}}`;
         fs.writeFileSync(skillMdPath, defaultMarkdown);
     }
@@ -337,6 +334,35 @@ module.exports = async function(page, helpers) {
         
         fs.writeFileSync(analysisFilePath, JSON.stringify(aiAnalysisObj, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
+        log(`[GATEWAY_ARTIFACT]: ${analysisFilePath}`);
+
+        // 🚀 NEW: Build the dynamic summary
+        let summaryText = "";
+        if (aiAnalysisObj.count === 0) {
+            summaryText = `🟢 **ST22 Status:** System is clean. 0 short dumps found.`;
+        } else {
+            summaryText = `🚨 **ST22 Alert: ${aiAnalysisObj.count} Dump(s) Found**\\n\\n`;
+            if (Array.isArray(aiAnalysisObj.dumps)) {
+                const topDumps = aiAnalysisObj.dumps.slice(0, 3);
+                topDumps.forEach(dump => {
+                    const err = dump.runtimeError || dump.error || dump.exception || dump.category || dump.type || "Unknown Error";
+                    const contextInfo = dump.program || dump.programName || dump.user || "System";
+                    
+                    // Safely grab date and time, defaulting to "?" if Ollama forgets them
+                    const dumpDate = dump.date || dump.dumpDate || "?";
+                    const dumpTime = dump.time || dump.dumpTime || "?";
+                    
+                    // Formats it beautifully: • [04/11/2026 07:13:48] COMPUTE_INT_ZERODIVIDE (BSHU)
+                    summaryText += `• [${dumpDate} ${dumpTime}] ${err} (${contextInfo})\\n`;
+                });                
+                if (aiAnalysisObj.count > 3) {
+                    summaryText += `\\n*(+ ${aiAnalysisObj.count - 3} more. See attached artifact for full details.)*`;
+                }
+            }
+        }
+
+        // Output the summary for the Gateway to catch
+        log(`[GATEWAY_SUMMARY]: ${summaryText}`);
 
         return `${aiAnalysisObj.count} short dump(s) found.`; 
 
