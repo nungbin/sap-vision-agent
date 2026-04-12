@@ -295,7 +295,8 @@ module.exports = async function(page, helpers) {
     // ==========================================
     // 5. SKILL.MD INJECTION & AI PARSING
     // ==========================================
-    const skillDirPath = path.join(__dirname, '..', 'skills', activeTCode);
+    // 🟢 UPDATED PATH: Jump up TWO directories to reach root /skills/
+    const skillDirPath = path.join(__dirname, '..', '..', 'skills', activeTCode);
     const skillMdPath = path.join(skillDirPath, 'skill.md');
 
     if (!isTesting && !fs.existsSync(skillMdPath)) {

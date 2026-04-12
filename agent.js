@@ -14,11 +14,8 @@ const SCREENSHOT_DIR = path.join(__dirname, 'screenshots');
 const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
 
 const isDebug = process.env.DEBUG && process.env.DEBUG.toUpperCase() === 'TRUE';
-
-// Determine Headless state. Default to true for cloud/cron, allow override via .env
 const isHeadless = process.env.HEADLESS ? process.env.HEADLESS.toUpperCase() === 'TRUE' : true;
 
-// Auto-wipe old screenshots on startup if NOT in debug mode
 if (!isDebug && fs.existsSync(SCREENSHOT_DIR)) {
     fs.rmSync(SCREENSHOT_DIR, { recursive: true, force: true });
 }
@@ -26,19 +23,90 @@ if (!isDebug && fs.existsSync(SCREENSHOT_DIR)) {
 if (!fs.existsSync(SCREENSHOT_DIR)) fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
+// ==========================================
+// NEW: TASK.MD CONFIGURATION PARSER
+// ==========================================
+function parseTaskConfig(taskName) {
+    const mdPath = path.join(__dirname, 'tasks', taskName, 'task.md');
+    if (!fs.existsSync(mdPath)) {
+        throw new Error(`Missing task.md file at: ${mdPath}`);
+    }
+
+    const content = fs.readFileSync(mdPath, 'utf8');
+    const config = { target: '', type: '', payload: {} };
+
+    // Extract TARGET
+    const targetMatch = content.match(/#\s*TARGET\n+([^\n]+)/i);
+    if (targetMatch) config.target = targetMatch[1].trim();
+
+    // Extract TYPE
+    const typeMatch = content.match(/#\s*TYPE\n+([^\n]+)/i);
+    if (typeMatch) config.type = typeMatch[1].trim();
+
+    // Extract PAYLOAD (Handles default values with '=')
+    const payloadMatch = content.match(/#\s*PAYLOAD\n+([\s\S]*?)(?:\n#|$)/i);
+    if (payloadMatch) {
+        const lines = payloadMatch[1].split('\n');
+        for (let line of lines) {
+            line = line.trim();
+            if (line === 'NONE' || !line.startsWith('-')) continue;
+            
+            line = line.replace(/^-/, '').trim(); 
+            const splitIdx = line.indexOf('=');
+            if (splitIdx !== -1) {
+                const key = line.substring(0, splitIdx).trim();
+                const val = line.substring(splitIdx + 1).trim();
+                config.payload[key] = val;
+            } else if (line.length > 0) {
+                config.payload[line] = "";
+            }
+        }
+    }
+    return config;
+}
+
 async function run() {
     log("==================================================");
     log("🤖 SAP VISION AGENT: FSM ORCHESTRATOR INITIALIZING");
     log(`⚙️  MODE: ${isHeadless ? 'HEADLESS (Cloud/Cron)' : 'INTERACTIVE (Local/GUI)'}`);
     log("==================================================");
 
-    const queue = await getQueue(process.env.GOOGLE_SHEET_ID);
-    if (queue.length === 0) {
-        log("No Tasks found in the execution queue.");
-        return;
+    // ==========================================
+    // DUAL-ENGINE QUEUE BUILDER
+    // ==========================================
+    let queue = [];
+    let isCliRun = false;
+    const cliTask = process.argv[2]; // e.g., "node agent.js ui5_wizard"
+
+    if (cliTask) {
+        log(`⚡ EVENT ENGINE TRIGGERED: Bypassing Google Sheets for isolated run: [${cliTask.toUpperCase()}]`);
+        isCliRun = true;
+        try {
+            const config = parseTaskConfig(cliTask);
+            
+            // Build a "Mock" Mega-Sheet Row in memory!
+            const mockTask = {
+                taskName: cliTask,
+                tcode: config.type === 'TCODE' ? config.target : cliTask,
+                target: config.target,
+                skillState: 'Production', // Default entry point for standalone requests
+                rowIndex: -1,
+                ...config.payload // Spreads the task.md variables (e.g. productType) into the object
+            };
+            queue.push(mockTask);
+        } catch (e) {
+            log(`❌ Failed to parse task.md for ${cliTask}: ${e.message}`, "ERROR");
+            return;
+        }
+    } else {
+        log(`📊 BATCH ENGINE TRIGGERED: Fetching queue from Google Mega-Sheet...`);
+        queue = await getQueue(process.env.GOOGLE_SHEET_ID);
+        if (queue.length === 0) {
+            log("No Tasks found in the execution queue.");
+            return;
+        }
     }
 
-    // 🟢 HEADLESS & CONTAINER SAFE LAUNCH ARGS
     const browser = await chromium.launch({ 
         headless: isHeadless,
         args: ['--no-sandbox', '--disable-setuid-sandbox'] 
@@ -55,28 +123,25 @@ async function run() {
     await page.waitForLoadState('networkidle');
 
     for (const task of queue) {
-        // Support both legacy T-Codes and modern UI5 scripts
         const scriptName = (task.taskName || task.tcode).toLowerCase();
-        log(`\n▶️ Processing Row ${task.rowIndex}: [${scriptName.toUpperCase()}]`);
+        log(`\n▶️ Processing: [${scriptName.toUpperCase()}]`);
         
         let currentState = task.skillState;
         let cycleComplete = false;
 
-        // ==========================================
-        // DYNAMIC URL ROUTING LOGIC
-        // ==========================================
         let targetUrl = '';
         if (task.target && task.target.toLowerCase().startsWith('http')) {
-            // Modern UI5 URL
             targetUrl = task.target;
         } else {
-            // Legacy T-Code (Fallback to taskName if target is somehow blank)
             const tcodeTarget = task.target || task.tcode || task.taskName;
             targetUrl = `${process.env.SAP_WEBGUI_URL}&~transaction=${tcodeTarget}`;
         }
 
         while (!cycleComplete) {
             const timestamp = new Date().toLocaleString('en-US', { timeZone: process.env.LOG_TIMEZONE });
+            
+            // 🟢 UPDATED PATH: Injecting scriptName twice to access the sub-folder
+            const scriptPath = path.join(__dirname, 'tasks', scriptName, `${scriptName}.js`);
 
             if (currentState === 'Needs Training' || currentState === 'Broken') {
                 log(`[FSM STATE: ${currentState.toUpperCase()}] Initiating Targeted AI/Human Training...`);
@@ -86,25 +151,22 @@ async function run() {
                     await page.goto(targetUrl);
                     await page.waitForLoadState('networkidle');
 
-                    const scriptPath = path.join(__dirname, 'tasks', `${scriptName}.js`);
-                    const executeTCode = require(scriptPath);
-                    
-                    // 🟢 Inject BOTH legacy 'tcode' and modern 'taskData'/'scriptName'
-                    const runMessage = await executeTCode(page, { 
+                    const executeTask = require(scriptPath);
+                    const runMessage = await executeTask(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
                         isTesting: false, 
-                        tcode: task.tcode || task.taskName, // Preserved for legacy ST22
-                        scriptName: scriptName,             // New for UI5
-                        taskData: task                      // The full Mega-Sheet row payload!
+                        tcode: task.tcode || task.taskName,
+                        scriptName: scriptName,             
+                        taskData: task                      
                     });
 
                     log(`✅ Training Complete for ${scriptName.toUpperCase()}. Updating checkpoint to TESTING.`);
                     currentState = 'Testing';
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Training complete. Pending unit test.', timestamp);
+                    if (!isCliRun) await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Training complete. Pending unit test.', timestamp);
                 } catch (error) {
                     log(`❌ Training Failed for ${scriptName.toUpperCase()}: ${error.message}`, "ERROR");
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', error.message, timestamp);
+                    if (!isCliRun) await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', error.message, timestamp);
                     cycleComplete = true; 
                 }
             } 
@@ -116,10 +178,8 @@ async function run() {
                     await page.goto(targetUrl);
                     await page.waitForLoadState('networkidle');
 
-                    const scriptPath = path.join(__dirname, 'tasks', `${scriptName}.js`);
-                    const executeTCode = require(scriptPath);
-                    
-                    const runMessage = await executeTCode(page, { 
+                    const executeTask = require(scriptPath);
+                    const runMessage = await executeTask(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
                         isTesting: true, 
@@ -130,11 +190,11 @@ async function run() {
 
                     log(`🎉 Validation Passed! Promoting ${scriptName.toUpperCase()} to PRODUCTION.`);
                     currentState = 'Production';
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
+                    if (!isCliRun) await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
                     cycleComplete = true; 
                 } catch (error) {
                     log(`❌ Unit Test Failed for ${scriptName.toUpperCase()}: ${error.message}`, "ERROR");
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Validation Failed: ${error.message}`, timestamp);
+                    if (!isCliRun) await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Validation Failed: ${error.message}`, timestamp);
                     cycleComplete = true; 
                 }
             }
@@ -146,10 +206,8 @@ async function run() {
                     await page.goto(targetUrl);
                     await page.waitForLoadState('networkidle');
 
-                    const scriptPath = path.join(__dirname, 'tasks', `${scriptName}.js`);
-                    const executeTCode = require(scriptPath);
-                    
-                    const runMessage = await executeTCode(page, { 
+                    const executeTask = require(scriptPath);
+                    const runMessage = await executeTask(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
                         isTesting: false, 
@@ -159,11 +217,22 @@ async function run() {
                     });
 
                     log(`✅ Production Run Complete for ${scriptName.toUpperCase()}.`);
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
+                    if (!isCliRun) await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
+                    
+                    // If CLI run, we want to broadcast the final result out to the console so the Gateway can catch it!
+                    if (isCliRun) log(`[GATEWAY_RESPONSE]: ${runMessage || 'Success'}`);
+                    
                     cycleComplete = true;
                 } catch (error) {
                     log(`💥 Production Run Crashed for ${scriptName.toUpperCase()}. Self-healing triggered.`, "ERROR");
-                    await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Crashed: ${error.message}`, timestamp);
+                    if (!isCliRun) await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Crashed: ${error.message}`, timestamp);
+                    
+                    if (isCliRun) {
+                        log(`[GATEWAY_RESPONSE]: Crashed - ${error.message}`, "ERROR");
+                    } else {
+                        // Only loop back to training locally if we are running in the batch FSM loop
+                        currentState = 'Needs Training';
+                    }
                     cycleComplete = true; 
                 }
             }
