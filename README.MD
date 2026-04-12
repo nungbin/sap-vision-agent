@@ -4,6 +4,20 @@ An autonomous, self-healing Robotic Process Automation (RPA) agent for both lega
 
 This project implements a **Finite State Machine (FSM)** to achieve Level 5 autonomy, allowing the bot to organically train, test, execute, and self-heal without human micromanagement.
 
+## 🎬 See it in Action
+
+### 1. Interactive Training Phase (AI Vision & Context Switching)
+*Watch the agent inject Set-of-Mark (SoM) boxes to visually map the legacy SAP DOM using AI, and then seamlessly switch to pure native Playwright locators for the modern UI5 app.*
+
+![Training Phase Demo](demo/Training.gif)
+
+### 2. Headless Batch Execution (Zero-Token Memory)
+*Once trained, the agent relies entirely on its `skill.json` cache. Watch it fly through the legacy transaction and UI5 app entirely in the background, without requiring AI inference or rendering visual boxes.*
+
+![Batch Execution Demo](demo/Batch.gif)
+
+---
+
 ## ✨ Key Features
 
 * **🎛️ Universal Mega-Sheet FSM Orchestrator:** The FSM is entirely controlled via a dynamic Google Sheet. Tasks cycle through explicit states:
@@ -35,6 +49,7 @@ sap-vision-agent/
 ├── downloads/            # (Auto-generated) Extracted raw text feeds and JSON analysis
 ├── screenshots/          # (Auto-generated) Current run visuals & crash reports
 ├── logs/                 # Standard output logs for Headless/Cron execution
+├── demo/                 # Presentation GIFs for GitHub README
 ├── .env                  # Environment configuration (ignored in git)
 └── package.json
 ```
