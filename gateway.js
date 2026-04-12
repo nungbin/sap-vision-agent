@@ -71,14 +71,25 @@ async function startGateway() {
 
         log(`[TELEGRAM] Message from ${msg.chat.first_name}: "${text}"`);
 
+        // ------------------------------------------
+        // COMMAND: /start
+        // ------------------------------------------
         if (text === '/start') {
             bot.sendMessage(chatId, "👋 Gateway online. Type /list for tasks.");
         } 
+        
+        // ------------------------------------------
+        // COMMAND: /list
+        // ------------------------------------------
         else if (text === '/list') {
             const tasks = getAvailableTasks();
             let response = "📋 *Available Tasks:*\n\n" + tasks.map(t => `• \`${t}\``).join('\n') + "\n\nType: `/run [task]`";
             bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
         } 
+        
+        // ------------------------------------------
+        // COMMAND: /run [task]
+        // ------------------------------------------
         else if (text.startsWith('/run ')) {
             const taskName = text.split(' ')[1]?.toLowerCase();
             const tasks = getAvailableTasks();
@@ -93,7 +104,7 @@ async function startGateway() {
                 const messageId = sentMsg.message_id;
                 let finalResult = "";
                 let artifactPath = "";
-                let summaryReport = ""; // 🚀 NEW: Variable to hold the summary
+                let summaryReport = ""; 
 
                 const childProcess = exec(`node agent.js ${taskName}`);
 
@@ -106,7 +117,6 @@ async function startGateway() {
                     const artifactMatch = output.match(/\[GATEWAY_ARTIFACT\]:\s*(.*)/);
                     if (artifactMatch) artifactPath = artifactMatch[1].trim();
 
-                    // 🚀 NEW: Catch the Summary tag from st22.js
                     const summaryMatch = output.match(/\[GATEWAY_SUMMARY\]:\s*(.*)/);
                     if (summaryMatch) summaryReport = summaryMatch[1].trim();
 
@@ -122,10 +132,25 @@ async function startGateway() {
                     const isCrash = finalResult.toLowerCase().includes('crashed') || code !== 0;
 
                     if (isCrash) {
-                        bot.editMessageText(`❌ *Crash:* ${finalResult || "Error"}`, {
+                        bot.editMessageText(`❌ *Crash Detected for ${taskName.toUpperCase()}:*\n${finalResult || "Unknown error."}`, {
                             chat_id: chatId, message_id: messageId, parse_mode: 'Markdown'
-                        });
-                        // ... Screenshot logic remains here ...
+                        }).catch(err => {});
+
+                        // Fully restored screenshot logic
+                        const screenshotsDir = path.join(__dirname, 'screenshots');
+                        if (fs.existsSync(screenshotsDir)) {
+                            const files = fs.readdirSync(screenshotsDir)
+                                .filter(f => f.startsWith('CRASH_') && f.endsWith('.png'))
+                                .map(f => ({ name: f, time: fs.statSync(path.join(screenshotsDir, f)).mtime.getTime() }))
+                                .sort((a, b) => b.time - a.time); 
+                            
+                            if (files.length > 0) {
+                                const latestScreenshot = path.join(screenshotsDir, files[0].name);
+                                bot.sendPhoto(chatId, latestScreenshot, { 
+                                    caption: `📸 Crash Snapshot for ${taskName.toUpperCase()}` 
+                                }).catch(err => log(`Failed to send photo: ${err.message}`, 'ERROR'));
+                            }
+                        }
                     } else {
                         // 🚀 SUCCESS: USE THE HELPER TO FORMAT THE REPORT
                         const telegramFriendlySummary = formatReport(summaryReport);
@@ -143,6 +168,21 @@ async function startGateway() {
                     }
                 });
             });
+        }
+        
+        // ------------------------------------------
+        // COMMAND: UNRECOGNIZED SLASH COMMAND CATCHER
+        // ------------------------------------------
+        else if (text.startsWith('/')) {
+            const badCommand = text.split(' ')[0];
+            bot.sendMessage(chatId, `⚠️ Unrecognized command: \`${badCommand}\`\n\nTo execute a task, you must use the \`/run\` command.\nExample: \`/run ui5_wizard\``, { parse_mode: 'Markdown' });
+        }
+        
+        // ------------------------------------------
+        // FALLBACK (Natural Language)
+        // ------------------------------------------
+        else {
+            bot.sendMessage(chatId, `I heard you say: "${text}".\n\n*(AI Intent parsing coming soon! Use /list for now.)*`, { parse_mode: 'Markdown' });
         }
     });
 }
