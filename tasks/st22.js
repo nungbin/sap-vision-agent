@@ -109,16 +109,17 @@ module.exports = async function(page, helpers) {
                 }
             }
             
+            // GLOBAL CIRCUIT BREAKER LOGIC
             if (!isAiGuessValid) {
                 boxNum = null; 
                 aiFailCount++;
-                if (aiFailCount >= 2) {
-                    log(`🛑 AI has failed 2 times. Tripping Circuit Breaker. Switching to Manual Mode to save time.`, "WARN");
+                if (aiFailCount >= 1) {
+                    log(`🛑 AI has failed ${aiFailCount} total times on this screen. Tripping Circuit Breaker. Switching to 100% Manual Mode.`, "WARN");
                     aiCircuitBreaker = true;
                 }
-            } else {
-                aiFailCount = 0; 
-            }
+            } 
+            // We removed the 'else { aiFailCount = 0; }' so failures are cumulative!
+            
         } else {
             log(`(AI Vision skipped due to Circuit Breaker)`);
         }
@@ -167,18 +168,22 @@ module.exports = async function(page, helpers) {
     }
 
     // ==========================================
-    // 2. FORM EXECUTION
+    // 2. FORM EXECUTION (UPGRADED AI PROMPTS)
     // ==========================================
     log(`Setting Date Range: ${dateFromStr} to ${dateToStr}`);
-    const dateFromLoc = await getFieldLocator('date_from', 'Date from (the first date box)');
+    
+    const dateFromLoc = await getFieldLocator('date_from', 'The first date input box located in the top Date row.');
     await dateFromLoc.fill(dateFromStr);
-    const dateToLoc = await getFieldLocator('date_to', 'Date to (the second date box)');
+    
+    const dateToLoc = await getFieldLocator('date_to', 'The SECOND date input box in the Date row. It is directly to the right of the first date box. Do not select the bottom input.');
     await dateToLoc.fill(dateToStr);
 
     log(`Setting Time Range: ${timeFromStr} to ${timeToStr}`);
-    const timeFromLoc = await getFieldLocator('time_from', 'Time from (the input box that already says 00:00:00)');
+    const timeFromLoc = await getFieldLocator('time_from', 'The first time input box that already contains the text 00:00:00');
     await timeFromLoc.fill(timeFromStr);
-    const timeToLoc = await getFieldLocator('time_to', 'Time to (the input box that already says 23:59:59)');
+    
+    // Hyper-literal prompt for the duplicate Time box
+    const timeToLoc = await getFieldLocator('time_to', 'Look at the Time row. Find the SECOND input box in that row. It is under the "to" column.');
     await timeToLoc.fill(timeToStr);
 
     log(`Clearing User field for system-wide search...`);
@@ -237,7 +242,6 @@ module.exports = async function(page, helpers) {
         fs.writeFileSync(analysisFilePath, JSON.stringify(zeroDumpJson, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
         
-        // 🟢 Return dynamic message to the Orchestrator
         return "0 short dumps found."; 
     }
 
@@ -327,7 +331,6 @@ module.exports = async function(page, helpers) {
         fs.writeFileSync(analysisFilePath, JSON.stringify(aiAnalysisObj, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
 
-        // 🟢 Return dynamic message to the Orchestrator based on AI count!
         return `${aiAnalysisObj.count} short dump(s) found.`; 
 
     } catch (error) {

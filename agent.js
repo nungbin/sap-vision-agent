@@ -30,7 +30,7 @@ async function run() {
 
     const queue = await getQueue(process.env.GOOGLE_SHEET_ID);
     if (queue.length === 0) {
-        log("No T-Codes found in the execution queue.");
+        log("No Tasks found in the execution queue.");
         return;
     }
 
@@ -46,36 +46,55 @@ async function run() {
     await page.waitForLoadState('networkidle');
 
     for (const task of queue) {
-        log(`\n▶️ Processing Row ${task.rowIndex}: [${task.tcode}]`);
+        // Support both legacy T-Codes and modern UI5 scripts
+        const scriptName = (task.taskName || task.tcode).toLowerCase();
+        log(`\n▶️ Processing Row ${task.rowIndex}: [${scriptName.toUpperCase()}]`);
+        
         let currentState = task.skillState;
         let cycleComplete = false;
+
+        // ==========================================
+        // DYNAMIC URL ROUTING LOGIC
+        // ==========================================
+        let targetUrl = '';
+        if (task.target && task.target.toLowerCase().startsWith('http')) {
+            // Modern UI5 URL
+            targetUrl = task.target;
+        } else {
+            // Legacy T-Code (Fallback to taskName if target is somehow blank)
+            const tcodeTarget = task.target || task.tcode || task.taskName;
+            targetUrl = `${process.env.SAP_WEBGUI_URL}&~transaction=${tcodeTarget}`;
+        }
 
         while (!cycleComplete) {
             const timestamp = new Date().toLocaleString('en-US', { timeZone: process.env.LOG_TIMEZONE });
 
             if (currentState === 'Needs Training' || currentState === 'Broken') {
                 log(`[FSM STATE: ${currentState.toUpperCase()}] Initiating Targeted AI/Human Training...`);
-                purgeSkill(task.tcode); 
+                purgeSkill(scriptName); 
 
                 try {
-                    await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
+                    await page.goto(targetUrl);
                     await page.waitForLoadState('networkidle');
 
-                    const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
+                    const scriptPath = path.join(__dirname, 'tasks', `${scriptName}.js`);
                     const executeTCode = require(scriptPath);
                     
-                    // 🟢 Capture the returned message
+                    // 🟢 Inject BOTH legacy 'tcode' and modern 'taskData'/'scriptName'
                     const runMessage = await executeTCode(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
-                        isTesting: false, tcode: task.tcode 
+                        isTesting: false, 
+                        tcode: task.tcode || task.taskName, // Preserved for legacy ST22
+                        scriptName: scriptName,             // New for UI5
+                        taskData: task                      // The full Mega-Sheet row payload!
                     });
 
-                    log(`✅ Training Complete for ${task.tcode}. Updating checkpoint to TESTING.`);
+                    log(`✅ Training Complete for ${scriptName.toUpperCase()}. Updating checkpoint to TESTING.`);
                     currentState = 'Testing';
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Training complete. Pending unit test.', timestamp);
                 } catch (error) {
-                    log(`❌ Training Failed for ${task.tcode}: ${error.message}`, "ERROR");
+                    log(`❌ Training Failed for ${scriptName.toUpperCase()}: ${error.message}`, "ERROR");
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', error.message, timestamp);
                     cycleComplete = true; 
                 }
@@ -85,26 +104,27 @@ async function run() {
                 log(`[FSM STATE: TESTING] Executing strict autonomous unit test...`);
                 
                 try {
-                    await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
+                    await page.goto(targetUrl);
                     await page.waitForLoadState('networkidle');
 
-                    const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
+                    const scriptPath = path.join(__dirname, 'tasks', `${scriptName}.js`);
                     const executeTCode = require(scriptPath);
                     
-                    // 🟢 Capture the returned message
                     const runMessage = await executeTCode(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
-                        isTesting: true, tcode: task.tcode 
+                        isTesting: true, 
+                        tcode: task.tcode || task.taskName, 
+                        scriptName: scriptName, 
+                        taskData: task 
                     });
 
-                    log(`🎉 Validation Passed! Promoting ${task.tcode} to PRODUCTION.`);
+                    log(`🎉 Validation Passed! Promoting ${scriptName.toUpperCase()} to PRODUCTION.`);
                     currentState = 'Production';
-                    // 🟢 Write the dynamic message to the Google Sheet!
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
                     cycleComplete = true; 
                 } catch (error) {
-                    log(`❌ Unit Test Failed for ${task.tcode}: ${error.message}`, "ERROR");
+                    log(`❌ Unit Test Failed for ${scriptName.toUpperCase()}: ${error.message}`, "ERROR");
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Validation Failed: ${error.message}`, timestamp);
                     cycleComplete = true; 
                 }
@@ -114,25 +134,26 @@ async function run() {
                 log(`[FSM STATE: PRODUCTION] Executing silent autonomous run...`);
                 
                 try {
-                    await page.goto(`${process.env.SAP_WEBGUI_URL}&~transaction=${task.tcode}`);
+                    await page.goto(targetUrl);
                     await page.waitForLoadState('networkidle');
 
-                    const scriptPath = path.join(__dirname, 'tcodes', `${task.tcode.toLowerCase()}.js`);
+                    const scriptPath = path.join(__dirname, 'tasks', `${scriptName}.js`);
                     const executeTCode = require(scriptPath);
                     
-                    // 🟢 Capture the returned message (and fixed isTesting: false)
                     const runMessage = await executeTCode(page, { 
                         log, locateInAnyFrame, askHuman, askVisionForBox, injectSetOfMark, 
                         readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, 
-                        isTesting: false, tcode: task.tcode 
+                        isTesting: false, 
+                        tcode: task.tcode || task.taskName, 
+                        scriptName: scriptName, 
+                        taskData: task 
                     });
 
-                    log(`✅ Production Run Complete for ${task.tcode}.`);
-                    // 🟢 Write the dynamic message to the Google Sheet!
+                    log(`✅ Production Run Complete for ${scriptName.toUpperCase()}.`);
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, currentState, runMessage || 'Complete', timestamp);
                     cycleComplete = true;
                 } catch (error) {
-                    log(`💥 Production Run Crashed for ${task.tcode}. Self-healing triggered.`, "ERROR");
+                    log(`💥 Production Run Crashed for ${scriptName.toUpperCase()}. Self-healing triggered.`, "ERROR");
                     await updateRowStatus(process.env.GOOGLE_SHEET_ID, task.rowIndex, 'Broken', `Crashed: ${error.message}`, timestamp);
                     cycleComplete = true; 
                 }
