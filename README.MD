@@ -1,4 +1,4 @@
-# SAP Vision Agent 🤖👁️
+ SAP Vision Agent 🤖👁️
 
 An autonomous, self-healing Robotic Process Automation (RPA) agent for both legacy SAP WebGUI and modern SAP UI5/Fiori applications. Built with Node.js and Playwright, this agent leverages local Vision-Language Models (VLMs) via Ollama to dynamically navigate complex SAP environments, overcoming the notorious challenges of dynamic/ephemeral HTML IDs and aggressive frontend re-rendering.
 
@@ -49,6 +49,9 @@ sap-vision-agent/
 │   ├── sheet.js          # Google Sheets API Mega-Sheet parsing
 │   ├── vision.js         # Optimized Ollama Vision API requests
 │   └── telegram.js       # The ChatOps adapter (Markdown formatting, limits, buttons)
+├── sap_transports/       # Pre-packaged SAP ABAP Transports (SEGW/SE11 artifacts)
+│   ├── K900123.NPL
+│   └── R900123.NPL
 ├── tasks/                # Application-specific logic plugins (Directory-based)
 │   ├── st22/             
 │   │   ├── st22.js       # Legacy WebGUI task: AI Vision & Extractor logic
@@ -126,6 +129,25 @@ To fully utilize the Voice Memo Natural Language Intent features in Telegram, th
 
 For the complete STT server source code and Docker/LXC setup instructions, please refer to:
 🔗 [https://github.com/nungbin/ai-agent-browser](https://github.com/nungbin/ai-agent-browser)
+
+## 📦 SAP Backend Setup (OData & Transports)
+
+For tasks that require direct backend API communication (such as the modern UI5 Wizard PoC saving data to SAP), you will need the corresponding ABAP artifacts (Z-Tables and SEGW OData services).
+
+### Option A: Import via SAP Transports (Recommended)
+We have pre-packaged the backend artifacts into standard SAP Transports located in the `sap_transports/` directory (`K900123.NPL` and `R900123.NPL`).
+
+Please refer to this document for step-by-step instructions on importing these into your SAP NetWeaver system:
+🔗 [How to Import SAP Transports](https://github.com/nungbin/ai-agent-browser/blob/main/sap_abap_sources/transports/How_to_Import_SAP_Transports.md)
+
+### Option B: Manual Creation (SE11 & SEGW)
+If you prefer to build the backend manually:
+1. **Create the Database Table (SE11):** Create a standard transparent table (e.g., `ZPROD_WIZARD`) with fields matching your UI5 payload (e.g., `PRODUCT_ID`, `PROD_NAME`, `PROD_WEIGHT`).
+2. **Generate the OData Service (SEGW):** * Create a new project (e.g., `Z_PRODUCT_WIZARD`).
+   * Right-click **Data Model -> Import -> DDIC Structure** and point it to your Z-Table to automatically generate the OData Entity mapping.
+   * Click **Generate Runtime Objects**.
+3. **Implement ABAP Logic:** Edit the generated `*DPC_EXT` class, redefine the `PRODUCTSET_CREATE_ENTITY` method, read the `io_data_provider` payload, and `INSERT` the record into your Z-Table.
+4. **Register Service:** Use transaction `/IWFND/MAINT_SERVICE` to activate the service and expose the REST endpoint to UI5.
 
 ## 📱 Setting up the Telegram ChatOps Bot
 
