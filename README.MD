@@ -6,13 +6,17 @@ This project implements a **Finite State Machine (FSM)** to achieve Level 5 auto
 
 ## 🎬 See it in Action
 
-### 1\. Interactive Training Phase (AI Vision & Context Switching)
+### 1. Interactive Training Phase (AI Vision & Context Switching)
 
 *Watch the agent inject Set-of-Mark (SoM) boxes to visually map the legacy SAP DOM using AI, and then seamlessly switch to pure native Playwright locators for the modern UI5 app.*
 
-### 2\. Headless Batch Execution (Zero-Token Memory)
+![Training Phase Demo](demo/Training.gif)
+
+### 2. Headless Batch Execution (Zero-Token Memory)
 
 *Once trained, the agent relies entirely on its `skill.json` cache. Watch it fly through the legacy transaction and UI5 app entirely in the background, without requiring AI inference or rendering visual boxes.*
+
+![Batch Execution Demo](demo/Batch.gif)
 
 -----
 
@@ -24,6 +28,7 @@ This project implements a **Finite State Machine (FSM)** to achieve Level 5 auto
       * `Production`: Silent, lightning-fast execution using zero-token cached memory or pure native locators.
       * `Broken`: If a production run crashes (e.g., SAP updates its UI), the bot automatically demotes the task to `Broken`, captures a phase-specific crash screenshot, and drops back into training mode on the next run.
   * **💬 Enterprise ChatOps Gateway:** A decoupled event-driven Telegram server that streams real-time execution logs, formats dynamic AI summaries, and automatically uploads crash screenshots and generated JSON artifacts straight to your mobile device.
+  * **🎙️ Natural Language & Voice Routing:** Speak directly to the bot using Telegram voice memos! Audio is converted to text via a local STT microservice and fed into a global `system_prompt.md`. Ollama then parses your intent, matches it to the correct task using dynamically loaded `task.md` descriptions, and prompts you with a single-tap interactive execution button.
   * **🛤️ Dynamic URL Routing & Payload Injection:** The Orchestrator automatically parses dynamic headers from Row 1. It seamlessly routes both legacy WebGUI T-Codes and direct UI5 URLs, passing the entire row's data as a JSON payload (`taskData`) to your scripts for highly parameterized runs.
   * **🛡️ Multi-Layered Locator Shields:** Actively validates that the AI selected typeable `<input>` fields and detects if a modern framework (like UI5) asynchronously re-renders and destroys target elements while the AI is thinking.
   * **⚡ Global AI Circuit Breaker:** If the AI fails cumulatively across a transaction, the bot trips a global circuit breaker, bypassing the VLM for the rest of the run and dropping to manual Human-in-the-Loop mode (if running interactively) or gracefully aborting (if running headlessly).
@@ -35,6 +40,7 @@ This project implements a **Finite State Machine (FSM)** to achieve Level 5 auto
 sap-vision-agent/
 ├── agent.js              # The main FSM Orchestrator script
 ├── gateway.js            # The Telegram ChatOps server (Real-time listener)
+├── system_prompt.md      # Top-level persona and instruction set for AI routing
 ├── helpers/              # Core utilities
 │   ├── dom.js            # Omni-frame locators and SoM injection
 │   ├── human.js          # HITL terminal prompts & headless failsafes
@@ -45,9 +51,11 @@ sap-vision-agent/
 │   └── telegram.js       # The ChatOps adapter (Markdown formatting, limits, buttons)
 ├── tasks/                # Application-specific logic plugins (Directory-based)
 │   ├── st22/             
-│   │   └── st22.js       # Legacy WebGUI task: AI Vision & Extractor logic
+│   │   ├── st22.js       # Legacy WebGUI task: AI Vision & Extractor logic
+│   │   └── task.md       # AI intent description for the routing brain
 │   └── ui5_wizard/       
-│       └── ui5_wizard.js # Modern UI5 task: Phase-Gate & Native Locators
+│       ├── ui5_wizard.js # Modern UI5 task: Phase-Gate & Native Locators
+│       └── task.md       # AI intent description for the routing brain
 ├── skills/               # (Auto-generated) Memory banks and Skill.md prompts
 ├── downloads/            # (Auto-generated) Extracted raw text feeds and JSON analysis
 ├── screenshots/          # (Auto-generated) Current run visuals & crash reports
@@ -71,7 +79,7 @@ Your Google Sheet drives the Orchestrator. The headers in Row 1 are mapped dynam
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/nungbin/sap-vision-agent.git
+    git clone [https://github.com/nungbin/sap-vision-agent.git](https://github.com/nungbin/sap-vision-agent.git)
     cd sap-vision-agent
     ```
 
@@ -112,6 +120,13 @@ Your Google Sheet drives the Orchestrator. The headers in Row 1 are mapped dynam
     HEADLESS="TRUE" # Set to FALSE for local development
     ```
 
+## 🎙️ Speech-to-Text (STT) Microservice Setup
+
+To fully utilize the Voice Memo Natural Language Intent features in Telegram, the Gateway requires a local CPU/GPU-based STT microservice.
+
+For the complete STT server source code and Docker/LXC setup instructions, please refer to:
+🔗 [https://github.com/nungbin/ai-agent-browser](https://github.com/nungbin/ai-agent-browser)
+
 ## 📱 Setting up the Telegram ChatOps Bot
 
 To control the agent from your phone, you need to register a bot with Telegram's BotFather:
@@ -121,13 +136,13 @@ To control the agent from your phone, you need to register a bot with Telegram's
 3.  Give your bot a display name (e.g., `SAP Vision Agent`).
 4.  Give your bot a unique username ending in "bot" (e.g., `sap_hpa6_bot`).
 5.  BotFather will provide an **HTTP API Token**. Treat this like a password and paste it into your `.env` file under `TELEGRAM_BOT_TOKEN`.
-6.  *(Optional)* Send `/mybots` to BotFather, select your bot -\> Bot Settings -\> Group Privacy -\> **Turn Off**. This allows the bot to listen to natural language in team chats.
+6.  *(Optional)* Send `/mybots` to BotFather, select your bot -> Bot Settings -> Group Privacy -> **Turn Off**. This allows the bot to listen to natural language in team chats.
 
 ## 💻 Usage & Execution Modes
 
 The bot dynamically adapts to your deployment environment.
 
-### 1\. Interactive Mode (Local Development & Training)
+### 1. Interactive Mode (Local Development & Training)
 
 When building new skills or overriding broken ones, run the bot interactively. This pops open the browser, enables Human-in-the-Loop (`askHuman`) terminal prompts, and allows you to watch the agent learn.
 
@@ -135,7 +150,7 @@ When building new skills or overriding broken ones, run the bot interactively. T
 HEADLESS=false VERBOSE=true node agent.js
 ```
 
-### 2\. Headless Mode (Cloud / Production / Crontab)
+### 2. Headless Mode (Cloud / Production / Crontab)
 
 For unattended batch processing, run the bot headlessly. The agent will automatically bypass `askHuman` prompts to prevent infinite hangs and will write all crash diagnostics to the `screenshots/` directory.
 
@@ -143,7 +158,7 @@ For unattended batch processing, run the bot headlessly. The agent will automati
 HEADLESS=true node agent.js
 ```
 
-### 3\. ChatOps Mode (Telegram Gateway)
+### 3. ChatOps Mode (Telegram Gateway)
 
 Leave the gateway running to create an always-on listener that bridges Telegram to your CLI. It spawns headless `child_process` jobs and streams the terminal output live to your phone.
 
@@ -152,7 +167,8 @@ node gateway.js
 ```
 
   * **`/list`** - Dynamically scans your `tasks/` directory and shows available workflows.
-  * **`/run [task]`** - Spawns the task, streams live log updates directly into the chat bubble, and gracefully handles successes, summaries, or screenshot crash reporting.
+  * **`/run [task]`** - Instantly spawns a task via CLI command.
+  * **Voice & Text Intents** - Send a voice memo or type naturally (e.g., *"Hey, check the system for short dumps"*). The AI will dynamically route your request and present an interactive confirmation button. 
 
 ## 🔌 The Adapter Pattern (Telegram Helper)
 
@@ -197,5 +213,6 @@ tail -f /home/YOUR_USER/projects/sap_agent/logs/cron.log
 
 1.  **Update the Mega-Sheet:** Add a new row to your Google Sheet. Set the *Task Name* (e.g., `su01`), the *Skill State* (`Needs Training`), the *Target* (the T-Code or URL), and any dynamic payload columns you need.
 2.  **Create the Folder & Script:** Create a new folder inside the `tasks/` directory matching the Task Name exactly, and place your script inside (e.g., `tasks/su01/su01.js`).
-3.  **Build the Logic:** Export an asynchronous function that receives the `page` and `helpers` object. Use `helpers.taskData` to unpack your custom Sheet columns.
-4.  **Execute:** The Orchestrator and Gateway will seamlessly handle the FSM states, system login, URL routing, payload injection, dynamic ChatOps reporting, and self-healing.
+3.  **Add `task.md` (Optional):** Add a simple markdown file explaining what the task does so the AI routing brain can trigger it via Voice Memo or text.
+4.  **Build the Logic:** Export an asynchronous function that receives the `page` and `helpers` object. Use `helpers.taskData` to unpack your custom Sheet columns.
+5.  **Execute:** The Orchestrator and Gateway will seamlessly handle the FSM states, system login, URL routing, payload injection, dynamic ChatOps reporting, AI routing, and self-healing.
