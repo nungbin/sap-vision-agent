@@ -244,7 +244,17 @@ async function run() {
         }
     }
 
-    log("Queue processing complete. Closing browser.");
+    log("Queue processing complete. Executing graceful SAP logoff...");
+    try {
+        // The ~transaction=logoff parameter tells the ITS to instantly destroy the session
+        const logoffUrl = process.env.SAP_WEBGUI_URL.split('?')[0] + '?~transaction=logoff';
+        await page.goto(logoffUrl, { waitUntil: 'networkidle', timeout: 10000 });
+        log("✅ ITS Session memory cleared.");
+    } catch (e) {
+        log(`⚠️ Graceful logoff failed or timed out: ${e.message}`, "WARN");
+    }
+
+    log("Closing browser.");
     await browser.close();
 }
 

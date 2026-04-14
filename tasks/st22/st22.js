@@ -21,7 +21,7 @@ module.exports = async function(page, helpers) {
 
     const today = new Date();
     const yesterday = new Date();
-    yesterday.setDate(today.getDate() - 10);
+    yesterday.setDate(today.getDate() - 1);
 
     const formatDate = (d) => {
         const m = String(d.getMonth() + 1).padStart(2, '0');
