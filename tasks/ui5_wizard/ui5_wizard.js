@@ -80,6 +80,7 @@ module.exports = async function(page, helpers) {
     }
 
     // PHASE 5: Submit & Verify
+    let sapProductId = "UNKNOWN"; // 🚀 NEW: Variable to hold the generated ID
     try {
         log(`Phase 5: Submitting and verifying popup...`);
         await page.waitForTimeout(1000);
@@ -94,13 +95,60 @@ module.exports = async function(page, helpers) {
         log(`Waiting for confirmation MessageBox...`);
         const messageBoxYesBtn = page.getByRole('button', { name: /^Yes$/i });
         await messageBoxYesBtn.waitFor({ state: 'visible', timeout: 5000 });
-        await messageBoxYesBtn.click();
+        
+        await page.waitForTimeout(1000); // Wait for CSS fade-in
+
+        log(`Clicking Yes and waiting for SAP OData backend response...`);
+        
+        // 🚀 THE FIX: We destructure the array to capture the specific network response object!
+        const [odataResponse] = await Promise.all([
+            page.waitForResponse(response => 
+                response.url().toLowerCase().includes('/productset') && [200, 201, 204].includes(response.status())
+            ),
+            messageBoxYesBtn.click({ force: true })
+        ]);
+
+        // 🚀 THE MAGIC: Read the JSON payload returned by SAP
+        const responseBody = await odataResponse.json();
+        
+        // Dynamically find the ID key regardless of how SEGW capitalized it (ProductId, Productid, product_id)
+        const d = responseBody.d || {};
+        const idKey = Object.keys(d).find(k => k.toLowerCase().replace('_', '') === 'productid');
+        
+        if (idKey && d[idKey]) {
+            sapProductId = d[idKey];
+            log(`✅ Extracted SAP Product ID from network response: ${sapProductId}`);
+        } else {
+            log(`⚠️ Could not find ProductId in response body. Keys found: ${Object.keys(d).join(', ')}`, "WARN");
+        }
+
+        // Optional: Wait 1 second to let the green UI5 "Success" toast render on screen
+        await page.waitForTimeout(1000);
 
     } catch (e) {
         await takeCrashScreenshot("PHASE5");
         throw new Error(`Phase 5 Failed (Submit & Verify): ${e.message}`);
     }
 
+    // ==========================================
+    // GATEWAY REPORTING
+    // ==========================================
     log(`✅ UI5 Wizard successfully executed for ${productName}.`);
-    return `Completed: Wizard submitted for ${productName}.`;
+    
+    // 🚀 NEW: We wrap the dynamic variables in backticks (`) to prevent Telegram Markdown crashes!
+    const gatewaySummary = `
+**OData Record Created Successfully**
+* **Product ID:** \`${sapProductId}\`
+* **Product:** \`${productName}\`
+* **Type:** \`${productType}\`
+* **Weight:** \`${productWeight} KG\`
+* **Target:** \`ZPROD_WIZARD\` (SAP DB)
+* **Status:** HTTP 201 Created
+    `;
+
+    // Broadcast to Telegram via standard output
+    console.log(`\n[GATEWAY_SUMMARY]: ${gatewaySummary.trim().replace(/\n/g, '\\n')}`);
+
+    // The return string gets written directly to the Google Sheet "Status" column by agent.js!
+    return `Completed: Product created. ID: ${sapProductId}`;
 };

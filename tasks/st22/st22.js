@@ -21,7 +21,7 @@ module.exports = async function(page, helpers) {
 
     const today = new Date();
     const yesterday = new Date();
-    yesterday.setDate(today.getDate() - 1);
+    yesterday.setDate(today.getDate() - 10);
 
     const formatDate = (d) => {
         const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -243,8 +243,8 @@ module.exports = async function(page, helpers) {
         fs.writeFileSync(analysisFilePath, JSON.stringify(zeroDumpJson, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
         
-        log(`[GATEWAY_ARTIFACT]: ${analysisFilePath}`);
-        // 🚀 NEW: Clean summary for zero results
+        // 🚀 THE FIX: Removed the [GATEWAY_ARTIFACT] broadcast here so it doesn't send empty files!
+        
         log(`[GATEWAY_SUMMARY]: 🟢 **ST22 Status:** System is clean. 0 short dumps found.`);
         
         return "0 short dumps found."; 
@@ -334,9 +334,14 @@ module.exports = async function(page, helpers) {
         
         fs.writeFileSync(analysisFilePath, JSON.stringify(aiAnalysisObj, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
-        log(`[GATEWAY_ARTIFACT]: ${analysisFilePath}`);
+        
+        // 🚀 THE FIX: Only broadcast the artifact tag if dumps actually exist!
+        if (aiAnalysisObj.count > 0) {
+            log(`[GATEWAY_ARTIFACT]: ${analysisFilePath}`);
+        } else {
+            log(`ℹ️ 0 dumps found. Skipping artifact upload to Telegram.`);
+        }
 
-        // 🚀 NEW: Build the dynamic summary
         let summaryText = "";
         if (aiAnalysisObj.count === 0) {
             summaryText = `🟢 **ST22 Status:** System is clean. 0 short dumps found.`;
@@ -348,11 +353,9 @@ module.exports = async function(page, helpers) {
                     const err = dump.runtimeError || dump.error || dump.exception || dump.category || dump.type || "Unknown Error";
                     const contextInfo = dump.program || dump.programName || dump.user || "System";
                     
-                    // Safely grab date and time, defaulting to "?" if Ollama forgets them
                     const dumpDate = dump.date || dump.dumpDate || "?";
                     const dumpTime = dump.time || dump.dumpTime || "?";
                     
-                    // Formats it beautifully: • [04/11/2026 07:13:48] COMPUTE_INT_ZERODIVIDE (BSHU)
                     summaryText += `• [${dumpDate} ${dumpTime}] ${err} (${contextInfo})\\n`;
                 });                
                 if (aiAnalysisObj.count > 3) {

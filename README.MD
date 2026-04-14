@@ -50,8 +50,6 @@ sap-vision-agent/
 │   ├── vision.js         # Optimized Ollama Vision API requests
 │   └── telegram.js       # The ChatOps adapter (Markdown formatting, limits, buttons)
 ├── sap_transports/       # Pre-packaged SAP ABAP Transports (SEGW/SE11 artifacts)
-│   ├── K900123.NPL
-│   └── R900123.NPL
 ├── tasks/                # Application-specific logic plugins (Directory-based)
 │   ├── st22/             
 │   │   ├── st22.js       # Legacy WebGUI task: AI Vision & Extractor logic
