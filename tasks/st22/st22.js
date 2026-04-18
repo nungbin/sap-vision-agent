@@ -3,7 +3,7 @@ const fs = require('fs');
 module.exports = async function(page, helpers) {
     const { 
         log, locateInAnyFrame, askVisionForBox, askHuman, injectSetOfMark, 
-        readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, isTesting, tcode 
+        readSkill, writeSkill, SCREENSHOT_DIR, DOWNLOAD_DIR, path, isTesting, tcode, taskData 
     } = helpers;
 
     const activeTCode = tcode.toUpperCase();
@@ -19,10 +19,9 @@ module.exports = async function(page, helpers) {
 
     await page.waitForTimeout(2000); 
 
-    const today = new Date();
-    const yesterday = new Date();
-    yesterday.setDate(today.getDate() - 1);
-
+    // ==========================================
+    // 🚀 DYNAMIC PAYLOAD CONSUMPTION
+    // ==========================================
     const formatDate = (d) => {
         const m = String(d.getMonth() + 1).padStart(2, '0');
         const day = String(d.getDate()).padStart(2, '0');
@@ -30,8 +29,14 @@ module.exports = async function(page, helpers) {
         return `${m}/${day}/${y}`;
     };
 
-    const dateFromStr = formatDate(yesterday);
-    const dateToStr = formatDate(today);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    // Read the AI payload, or fallback to sensible defaults if running raw from cron
+    const dateFromStr = taskData.startDate || formatDate(yesterday);
+    const dateToStr = taskData.endDate || formatDate(today);
+    const targetUser = taskData.userName || '*';
     const timeFromStr = "00:00:00";
     const timeToStr = "23:59:59";
 
@@ -187,9 +192,9 @@ module.exports = async function(page, helpers) {
     const timeToLoc = await getFieldLocator('time_to', 'Look at the Time row. Find the SECOND input box in that row. It is under the "to" column.');
     await timeToLoc.fill(timeToStr);
 
-    log(`Clearing User field for system-wide search...`);
+    log(`Applying User Filter: [${targetUser}]`);
     const userLoc = await getFieldLocator('user_field', 'User input field');
-    await userLoc.fill('*');
+    await userLoc.fill(targetUser);
     await page.keyboard.press('Tab');
     await page.waitForTimeout(500);
 
@@ -243,9 +248,7 @@ module.exports = async function(page, helpers) {
         fs.writeFileSync(analysisFilePath, JSON.stringify(zeroDumpJson, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
         
-        // 🚀 THE FIX: Removed the [GATEWAY_ARTIFACT] broadcast here so it doesn't send empty files!
-        
-        log(`[GATEWAY_SUMMARY]: 🟢 **ST22 Status:** System is clean. 0 short dumps found.`);
+        log(`[GATEWAY_SUMMARY]: 🟢 **ST22 Status:** System is clean. 0 short dumps found for user ${targetUser}.`);
         
         return "0 short dumps found."; 
     }
@@ -309,7 +312,10 @@ module.exports = async function(page, helpers) {
     const finalPrompt = markdownTemplate.replace('{{RAW_SAP_DATA}}', `"""\n${rawTextFeed}\n"""`);
 
     try {
-        const response = await fetch(process.env.OLLAMA_URL, {
+        // We ensure this internal API call still uses /api/generate since we aren't chatting here, just parsing a document!
+        const generateUrl = process.env.OLLAMA_URL.replace('/api/chat', '/api/generate');
+
+        const response = await fetch(generateUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -335,7 +341,6 @@ module.exports = async function(page, helpers) {
         fs.writeFileSync(analysisFilePath, JSON.stringify(aiAnalysisObj, null, 2));
         log(`✅ AI JSON Analysis saved to: ${analysisFilePath}`);
         
-        // 🚀 THE FIX: Only broadcast the artifact tag if dumps actually exist!
         if (aiAnalysisObj.count > 0) {
             log(`[GATEWAY_ARTIFACT]: ${analysisFilePath}`);
         } else {
@@ -344,7 +349,7 @@ module.exports = async function(page, helpers) {
 
         let summaryText = "";
         if (aiAnalysisObj.count === 0) {
-            summaryText = `🟢 **ST22 Status:** System is clean. 0 short dumps found.`;
+            summaryText = `🟢 **ST22 Status:** System is clean. 0 short dumps found for user ${targetUser}.`;
         } else {
             summaryText = `🚨 **ST22 Alert: ${aiAnalysisObj.count} Dump(s) Found**\\n\\n`;
             if (Array.isArray(aiAnalysisObj.dumps)) {
@@ -364,7 +369,6 @@ module.exports = async function(page, helpers) {
             }
         }
 
-        // Output the summary for the Gateway to catch
         log(`[GATEWAY_SUMMARY]: ${summaryText}`);
 
         return `${aiAnalysisObj.count} short dump(s) found.`; 

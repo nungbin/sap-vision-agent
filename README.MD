@@ -2,7 +2,16 @@
 
 An autonomous, self-healing Robotic Process Automation (RPA) agent for both legacy SAP WebGUI and modern SAP UI5/Fiori applications. Built with Node.js and Playwright, this agent leverages local Vision-Language Models (VLMs) via Ollama to dynamically navigate complex SAP environments, overcoming the notorious challenges of dynamic/ephemeral HTML IDs and aggressive frontend re-rendering.
 
-This project implements a **Finite State Machine (FSM)** to achieve Level 5 autonomy, allowing the bot to organically train, test, execute, and self-heal without human micromanagement. It also features a real-time **Telegram ChatOps Gateway**, allowing you to command, monitor, and receive artifacts from the agent directly from your phone.
+This project implements a **Finite State Machine (FSM)** to achieve Level 5 autonomy, allowing the bot to organically train, test, execute, and self-heal without human micromanagement. It also features a real-time **Telegram ChatOps Gateway** with **Conversational Slot Filling**, allowing you to converse naturally with the bot to set execution parameters before approving payloads directly from your phone.
+
+> **Bin:** Hey, can you run the ST22 dump analysis for me?
+> 
+> **SAP Vision Agent:** I can certainly run the ST22 dump analysis for you. Could you please provide the start date and end date for the analysis?
+> 
+> **Bin:** From April 10th to April 14th.
+> 
+> **SAP Vision Agent:** ✅ **Task Ready:** `st22`
+> `[ 🚀 Execute Task ]` `[ ❌ Cancel ]`
 
 ## 🎬 See it in Action
 
@@ -28,11 +37,12 @@ This project implements a **Finite State Machine (FSM)** to achieve Level 5 auto
       * `Production`: Silent, lightning-fast execution using zero-token cached memory or pure native locators.
       * `Broken`: If a production run crashes (e.g., SAP updates its UI), the bot automatically demotes the task to `Broken`, captures a phase-specific crash screenshot, and drops back into training mode on the next run.
   * **💬 Enterprise ChatOps Gateway:** A decoupled event-driven Telegram server that streams real-time execution logs, formats dynamic AI summaries, and automatically uploads crash screenshots and generated JSON artifacts straight to your mobile device.
-  * **🎙️ Natural Language & Voice Routing:** Speak directly to the bot using Telegram voice memos! Audio is converted to text via a local STT microservice and fed into a global `system_prompt.md`. Ollama then parses your intent, matches it to the correct task using dynamically loaded `task.md` descriptions, and prompts you with a single-tap interactive execution button.
+  * **🧠 Conversational Slot Filling & HITL Execution:** Instead of rigid commands, the AI acts as a conversational gatekeeper. It reads a `# PARAMETERS` schema, identifies missing slots in your natural language request, interviews you to gather the missing data, and safely pauses for a Human-in-the-Loop (HITL) button confirmation before injecting the Base64 JSON payload into Playwright.
+  * **🎙️ Natural Language & Voice Routing:** Speak directly to the bot using Telegram voice memos! Audio is converted to text via a local STT microservice and fed into a global `system_prompt.md`. Ollama then parses your intent and matches it to the correct task dynamically.
   * **🛤️ Dynamic URL Routing & Payload Injection:** The Orchestrator automatically parses dynamic headers from Row 1. It seamlessly routes both legacy WebGUI T-Codes and direct UI5 URLs, passing the entire row's data as a JSON payload (`taskData`) to your scripts for highly parameterized runs.
   * **🛡️ Multi-Layered Locator Shields:** Actively validates that the AI selected typeable `<input>` fields and detects if a modern framework (like UI5) asynchronously re-renders and destroys target elements while the AI is thinking.
-  * **👻 Anti-Ghosting & Graceful ITS Logoffs:** Headless bots that rapidly terminate browsers often leave "Ghost Sessions" alive in the SAP backend, which eventually exhausts ITS memory and causes `HTTP 500 Internal Server Errors`. The Orchestrator prevents this by executing a graceful `~transaction=logoff` HTTP signal before killing the Chromium process—instantly destroying the server-side session and keeping your NetWeaver stack perfectly healthy.
-  * **⚡ Global AI Circuit Breaker:** If the AI fails cumulatively across a transaction, the bot trips a global circuit breaker, bypassing the VLM for the rest of the run and dropping to manual Human-in-the-Loop mode (if running interactively) or gracefully aborting (if running headlessly).
+  * **👻 Anti-Ghosting & Graceful ITS Logoffs:** Headless bots that rapidly terminate browsers often leave "Ghost Sessions" alive in the SAP backend, which eventually exhausts ITS memory and causes `HTTP 500 Internal Server Errors`. The Orchestrator prevents this by executing a graceful `~transaction=logoff` HTTP signal before killing the Chromium process.
+  * **⚡ Global AI Circuit Breaker:** If the AI fails cumulatively across a transaction, the bot trips a global circuit breaker, bypassing the VLM for the rest of the run and dropping to manual Human-in-the-Loop mode.
   * **🧬 Adaptive Phase-Gate Architecture:** Intelligently switches execution strategies based on the target environment (Legacy Visual AI vs. Modern Native Locators).
 
 ## 📂 Project Structure
@@ -40,8 +50,8 @@ This project implements a **Finite State Machine (FSM)** to achieve Level 5 auto
 ```text
 sap-vision-agent/
 ├── agent.js              # The main FSM Orchestrator script
-├── gateway.js            # The Telegram ChatOps server (Real-time listener)
-├── system_prompt.md      # Top-level persona and instruction set for AI routing
+├── gateway.js            # The Telegram ChatOps server (Real-time listener & Session Memory)
+├── system_prompt.md      # Top-level JSON state machine instructions for the AI
 ├── helpers/              # Core utilities
 │   ├── dom.js            # Omni-frame locators and SoM injection
 │   ├── human.js          # HITL terminal prompts & headless failsafes
@@ -49,15 +59,15 @@ sap-vision-agent/
 │   ├── skill.js          # JSON caching logic (readSkill, writeSkill, purgeSkill)
 │   ├── sheet.js          # Google Sheets API Mega-Sheet parsing
 │   ├── vision.js         # Optimized Ollama Vision API requests
-│   └── telegram.js       # The ChatOps adapter (Markdown formatting, limits, buttons)
+│   └── telegram.js       # The ChatOps adapter (HTML formatting, limits, buttons)
 ├── sap_transports/       # Pre-packaged SAP ABAP Transports (SEGW/SE11 artifacts)
 ├── tasks/                # Application-specific logic plugins (Directory-based)
 │   ├── st22/             
 │   │   ├── st22.js       # Legacy WebGUI task: AI Vision & Extractor logic
-│   │   └── task.md       # AI intent description for the routing brain
+│   │   └── task.md       # AI intent & parameter schema for the routing brain
 │   └── ui5_wizard/       
 │       ├── ui5_wizard.js # Modern UI5 task: Phase-Gate & Native Locators
-│       └── task.md       # AI intent description for the routing brain
+│       └── task.md       # AI intent & parameter schema for the routing brain
 ├── skills/               # (Auto-generated) Memory banks and Skill.md prompts
 ├── downloads/            # (Auto-generated) Extracted raw text feeds and JSON analysis
 ├── screenshots/          # (Auto-generated) Current run visuals & crash reports
@@ -69,7 +79,7 @@ sap-vision-agent/
 
 ## 📊 Google Sheet Structure (The Mega-Sheet)
 
-Your Google Sheet drives the Orchestrator. The headers in Row 1 are mapped dynamically to the `taskData` object injected into your scripts.
+Your Google Sheet drives the Batch Orchestrator. The headers in Row 1 are mapped dynamically to the `taskData` object injected into your scripts.
 
 | Task Name (Col A) | Skill State (Col B) | Target (Col C) | Complete/Error | Timestamp | Product Type | Product Name | Product Weight |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -104,7 +114,7 @@ Your Google Sheet drives the Orchestrator. The headers in Row 1 are mapped dynam
     SAP_PASS="your_password"
 
     # Ollama Vision Configuration
-    OLLAMA_URL="http://YOUR_OLLAMA_IP:11434/api/generate"
+    OLLAMA_URL="http://YOUR_OLLAMA_IP:11434/api/chat"
     OLLAMA_MODEL="gemma4:e2b" 
 
     # Google Sheets Configuration
@@ -141,12 +151,10 @@ Please refer to this document for step-by-step instructions on importing these i
 
 ### Option B: Manual Creation (SE11 & SEGW)
 If you prefer to build the backend manually:
-1. **Create the Database Table (SE11):** Create a standard transparent table (e.g., `ZPROD_WIZARD`) with fields matching your UI5 payload (e.g., `PRODUCT_ID`, `PROD_NAME`, `PROD_WEIGHT`).
-2. **Generate the OData Service (SEGW):** * Create a new project (e.g., `Z_PRODUCT_WIZARD`).
-   * Right-click **Data Model -> Import -> DDIC Structure** and point it to your Z-Table to automatically generate the OData Entity mapping.
-   * Click **Generate Runtime Objects**.
-3. **Implement ABAP Logic:** Edit the generated `*DPC_EXT` class, redefine the `PRODUCTSET_CREATE_ENTITY` method, read the `io_data_provider` payload, and `INSERT` the record into your Z-Table.
-4. **Register Service:** Use transaction `/IWFND/MAINT_SERVICE` to activate the service and expose the REST endpoint to UI5.
+1. **Create the Database Table (SE11):** Create a standard transparent table (e.g., `ZPROD_WIZARD`) with fields matching your UI5 payload.
+2. **Generate the OData Service (SEGW):** Create a new project, map the DDIC structure, and generate runtime objects.
+3. **Implement ABAP Logic:** Edit the generated `*DPC_EXT` class to `INSERT` the record into your Z-Table.
+4. **Register Service:** Use transaction `/IWFND/MAINT_SERVICE` to activate the service.
 
 ## 📱 Setting up the Telegram ChatOps Bot
 
@@ -154,86 +162,87 @@ To control the agent from your phone, you need to register a bot with Telegram's
 
 1.  Open Telegram and search for **@BotFather** (look for the verified blue checkmark).
 2.  Start the chat and send the command: `/newbot`
-3.  Give your bot a display name (e.g., `SAP Vision Agent`).
-4.  Give your bot a unique username ending in "bot" (e.g., `sap_hpa6_bot`).
-5.  BotFather will provide an **HTTP API Token**. Treat this like a password and paste it into your `.env` file under `TELEGRAM_BOT_TOKEN`.
-6.  *(Optional)* Send `/mybots` to BotFather, select your bot -> Bot Settings -> Group Privacy -> **Turn Off**. This allows the bot to listen to natural language in team chats.
+3.  Give your bot a display name and unique username ending in "bot" (e.g., `sap_hpa6_bot`).
+4.  Copy the **HTTP API Token** into your `.env` file under `TELEGRAM_BOT_TOKEN`.
+5.  *(Optional)* Send `/mybots` to BotFather, select your bot -> Bot Settings -> Group Privacy -> **Turn Off**. This allows the bot to listen to natural language in team chats.
 
 ## 💻 Usage & Execution Modes
 
 The bot dynamically adapts to your deployment environment.
 
 ### 1. Interactive Mode (Local Development & Training)
-
-When building new skills or overriding broken ones, run the bot interactively. This pops open the browser, enables Human-in-the-Loop (`askHuman`) terminal prompts, and allows you to watch the agent learn.
-
+Runs locally. Pops open the browser, enables Human-in-the-Loop (`askHuman`) terminal prompts, and allows you to watch the agent learn.
 ```bash
 HEADLESS=false VERBOSE=true node agent.js
 ```
 
 ### 2. Headless Mode (Cloud / Production / Crontab)
-
-For unattended batch processing, run the bot headlessly. The agent will automatically bypass `askHuman` prompts to prevent infinite hangs and will write all crash diagnostics to the `screenshots/` directory.
-
+Runs purely off the Google Sheet batch queue. Bypasses terminal prompts and writes all diagnostics to the `screenshots/` directory.
 ```bash
 HEADLESS=true node agent.js
 ```
 
-### 3. ChatOps Mode (Telegram Gateway)
-
-Leave the gateway running to create an always-on listener that bridges Telegram to your CLI. It spawns headless `child_process` jobs and streams the terminal output live to your phone.
-
+### 3. ChatOps Mode (Telegram Gateway & Conversational AI)
+Leave the gateway running to create an always-on listener that bridges Telegram to your CLI via a Stateful AI Session Manager.
 ```bash
 node gateway.js
 ```
 
-  * **`/list`** - Dynamically scans your `tasks/` directory and shows available workflows.
-  * **`/run [task]`** - Instantly spawns a task via CLI command.
-  * **Voice & Text Intents** - Send a voice memo or type naturally (e.g., *"Hey, check the system for short dumps"*). The AI will dynamically route your request and present an interactive confirmation button. 
+#### Conversational Testing Scenarios (UI5 Wizard)
+You do not have to say "run ui5" first. The AI routing brain reads your natural English, matches it to the UI5 task, and extracts variables conversationally.
 
-## 🔌 The Adapter Pattern (Telegram Helper)
+* **Scenario 1: The "One-Shot" Execution**
+    * **Human:** *"Can you create a new Desktop product named TITAN_PRO that weighs 5.5 kg?"*
+    * **AI:** Bypasses the interview, fills all slots, and immediately presents the execution button.
+* **Scenario 2: The "Vague / Lazy" Request (Testing Schema Defaults)**
+    * **Human:** *"Hey, run the product creation wizard for me."*
+    * **AI:** Silently applies `task.md` schema defaults (Mobile, TEST_PROD_01, 1 kg) and asks for final confirmation.
+* **Scenario 3: The "Multi-Turn Interview" (Conversational Memory)**
+    * **Human:** *"I need to add a new Tablet to the system."*
+    * **AI:** *"Sure! What would you like to name this Tablet, and what is its weight?"*
+    * **Human:** *"Let's name it GALAXY_TAB. It weighs 1.2 kg."*
+    * **AI:** Combines the memory from both turns and presents the execution payload.
+* **Scenario 4: The "Pre-Flight Correction"**
+    * **Human:** *"Wait, actually change the weight to 0.5 kg."*
+    * **AI:** Remembers the product type and name, updates only the weight slot, and regenerates the confirmation button.
+* **Scenario 5: The "Hard Pivot" (Memory Wipe)**
+    * **Human:** *"Actually, never mind. Can you check ST22 for short dumps from yesterday instead?"*
+    * **AI:** Triggers a `PIVOT`, wipes the UI5 memory session, loads the ST22 schema, and adapts to the new intent instantly.
 
-The project utilizes an Adapter Pattern (`helpers/telegram.js`) to completely decouple the presentation layer from the SAP business logic.
-
-  * The core scripts (e.g., `st22.js`) simply broadcast massive text summaries and file paths to the terminal via `[GATEWAY_SUMMARY]` and `[GATEWAY_ARTIFACT]` tags.
-  * The Telegram Adapter intercepts these strings, converts terminal line breaks, truncates data to fit Telegram's strict 4,096 character limit, and injects interactive callback buttons—ensuring the engine runs flawlessly regardless of whether it's talking to Telegram, Google Chat, or Slack.
+#### Conversational Testing Scenarios (ST22 Dump Analysis)
+* **Scenario 1: The "One-Shot" Execution**
+    * **Human:** *"Run ST22 for user JSMITH from April 1st to April 5th."*
+    * **AI:** Extracts all explicit dates and users, skipping the interview.
+* **Scenario 2: The Defaults & Relative Dates**
+    * **Human:** *"Can you check the system for short dumps?"*
+    * **AI:** Realizes the user is missing, applies the default `*` (system-wide) from the schema, and prompts for dates.
+    * **Human:** *"Just from yesterday to today."*
+    * **AI:** Calculates the relative dates and builds the final JSON payload.
 
 ## ⏳ Headless Background Scheduling (Crontab-UI)
 
 To run the agent autonomously in a Linux LXC or cloud container, we use `crontab-ui` as our background scheduler.
 
 **1. Install Crontab-UI Globally:**
-
 ```bash
 npm install -g crontab-ui
 ```
 
 **2. Start the Web Dashboard:**
-Bind it to `0.0.0.0` so you can access the dashboard over your local network:
-
+Bind it to `0.0.0.0` so you can access the dashboard over your local network (`http://<your-server-ip>:8000`):
 ```bash
 HOST=0.0.0.0 crontab-ui
 ```
 
-*(Access via browser at `http://<your-server-ip>:8000`)*
-
 **3. Configure the Cron Job:**
-Create a new job in the dashboard using absolute paths to ensure the environment initializes correctly. Append the output to a log file:
-
-  * **Command:** `cd /home/YOUR_USER/projects/sap_agent && /usr/bin/node agent.js >> logs/cron.log 2>&1`
-  * **Schedule:** `*/5 * * * *` (Every 5 minutes, or schedule it to run once on demand)
-
-**4. Real-Time Log Monitoring:**
-Because the browser is hidden, you can monitor the bot's live thoughts and actions by "tailing" the log file via your SSH terminal:
-
-```bash
-tail -f /home/YOUR_USER/projects/sap_agent/logs/cron.log
-```
+Create a new job using absolute paths. Append output to a log file:
+* **Command:** `cd /home/YOUR_USER/projects/sap_agent && /usr/bin/node agent.js >> logs/cron.log 2>&1`
+* **Schedule:** `*/5 * * * *` 
 
 ## 🏗️ How to Add New Tasks (Directory Structure)
 
-1.  **Update the Mega-Sheet:** Add a new row to your Google Sheet. Set the *Task Name* (e.g., `su01`), the *Skill State* (`Needs Training`), the *Target* (the T-Code or URL), and any dynamic payload columns you need.
-2.  **Create the Folder & Script:** Create a new folder inside the `tasks/` directory matching the Task Name exactly, and place your script inside (e.g., `tasks/su01/su01.js`).
-3.  **Add `task.md` (Optional):** Add a simple markdown file explaining what the task does so the AI routing brain can trigger it via Voice Memo or text.
-4.  **Build the Logic:** Export an asynchronous function that receives the `page` and `helpers` object. Use `helpers.taskData` to unpack your custom Sheet columns.
-5.  **Execute:** The Orchestrator and Gateway will seamlessly handle the FSM states, system login, URL routing, payload injection, dynamic ChatOps reporting, AI routing, and self-healing.
+1.  **Update the Mega-Sheet:** Add a new row to your Google Sheet. Set the *Task Name*, *Skill State* (`Needs Training`), and *Target*.
+2.  **Create the Folder & Script:** Create a new folder inside `tasks/` matching the Task Name exactly (e.g., `tasks/su01/su01.js`).
+3.  **Add `task.md` (The Schema):** Create a markdown file with an `# INTENT` block and a `# PARAMETERS` list. Describe the data types and fallback defaults here so the AI knows how to interview the user.
+4.  **Build the Logic:** Export an asynchronous function. Use `helpers.taskData` to unpack the dynamic JSON payload extracted by the AI or Google Sheet.
+5.  **Execute:** The Orchestrator will handle the FSM states, system login, URL routing, payload injection, dynamic ChatOps reporting, AI routing, and self-healing.

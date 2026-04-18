@@ -43,7 +43,7 @@ function parseTaskConfig(taskName) {
     const typeMatch = content.match(/#\s*TYPE\n+([^\n]+)/i);
     if (typeMatch) config.type = typeMatch[1].trim();
 
-    // Extract PAYLOAD (Handles default values with '=')
+    // Extract PAYLOAD (Handles legacy default values with '=')
     const payloadMatch = content.match(/#\s*PAYLOAD\n+([\s\S]*?)(?:\n#|$)/i);
     if (payloadMatch) {
         const lines = payloadMatch[1].split('\n');
@@ -76,7 +76,8 @@ async function run() {
     // ==========================================
     let queue = [];
     let isCliRun = false;
-    const cliTask = process.argv[2]; // e.g., "node agent.js ui5_wizard"
+    const cliTask = process.argv[2]; // e.g., "ui5_wizard"
+    const base64Payload = process.argv[3]; // 🚀 NEW: The encoded JSON payload from the Gateway
 
     if (cliTask) {
         log(`⚡ EVENT ENGINE TRIGGERED: Bypassing Google Sheets for isolated run: [${cliTask.toUpperCase()}]`);
@@ -84,6 +85,14 @@ async function run() {
         try {
             const config = parseTaskConfig(cliTask);
             
+            // 🚀 NEW: Decode the incoming payload from the Gateway
+            let dynamicPayload = {};
+            if (base64Payload) {
+                const decodedString = Buffer.from(base64Payload, 'base64').toString('utf-8');
+                dynamicPayload = JSON.parse(decodedString);
+                log(`📥 Received dynamic HITL payload from Gateway!`);
+            }
+
             // Build a "Mock" Mega-Sheet Row in memory!
             const mockTask = {
                 taskName: cliTask,
@@ -91,7 +100,8 @@ async function run() {
                 target: config.target,
                 skillState: 'Production', // Default entry point for standalone requests
                 rowIndex: -1,
-                ...config.payload // Spreads the task.md variables (e.g. productType) into the object
+                ...config.payload, // Spreads legacy task.md variables (if any exist)
+                ...dynamicPayload  // 🚀 NEW: Overwrites with the AI-extracted human variables!
             };
             queue.push(mockTask);
         } catch (e) {
@@ -140,7 +150,6 @@ async function run() {
         while (!cycleComplete) {
             const timestamp = new Date().toLocaleString('en-US', { timeZone: process.env.LOG_TIMEZONE });
             
-            // 🟢 UPDATED PATH: Injecting scriptName twice to access the sub-folder
             const scriptPath = path.join(__dirname, 'tasks', scriptName, `${scriptName}.js`);
 
             if (currentState === 'Needs Training' || currentState === 'Broken') {

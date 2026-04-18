@@ -1,5 +1,5 @@
 require('dotenv').config();
-process.env.NTBA_FIX_350 = 1; // 🚀 NEW: Silences the file upload deprecation warning
+process.env.NTBA_FIX_350 = 1; // Silences the file upload deprecation warning
 const TelegramBot = require('node-telegram-bot-api');
 const { exec } = require('child_process');
 const fs = require('fs');
@@ -8,7 +8,40 @@ const { log } = require('./helpers/logger');
 const { formatReport, createConfirmButton } = require('./helpers/telegram');
 
 // ==========================================
-// 1. HEALTH CHECKS
+// 1. SESSION MANAGEMENT (Conversational Memory)
+// ==========================================
+const activeSessions = new Map();
+
+function getSession(chatId) {
+    if (!activeSessions.has(chatId)) {
+        activeSessions.set(chatId, {
+            targetTask: null,     // The task we are currently slot-filling for
+            history: [],          // The LLM conversation array
+            lastActive: Date.now()
+        });
+    }
+    const session = activeSessions.get(chatId);
+    session.lastActive = Date.now();
+    return session;
+}
+
+function clearSession(chatId) {
+    activeSessions.delete(chatId);
+}
+
+// Memory Garbage Collection: Clear inactive sessions after 15 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [chatId, session] of activeSessions.entries()) {
+        if (now - session.lastActive > 15 * 60 * 1000) {
+            activeSessions.delete(chatId);
+            log(`🧹 Garbage Collection: Cleared idle session for chat ${chatId}`);
+        }
+    }
+}, 60000);
+
+// ==========================================
+// 2. HEALTH CHECKS
 // ==========================================
 async function checkOllama() {
     try {
@@ -41,7 +74,7 @@ async function checkAudioService() {
 }
 
 // ==========================================
-// 2. HELPER FUNCTIONS
+// 3. HELPER FUNCTIONS
 // ==========================================
 function getAvailableTasks() {
     const tasksDir = path.join(__dirname, 'tasks');
@@ -49,23 +82,23 @@ function getAvailableTasks() {
     return fs.readdirSync(tasksDir).filter(file => fs.statSync(path.join(tasksDir, file)).isDirectory());
 }
 
-// Dynamically read all task.md files for the AI
-function getTaskDescriptions() {
+// Dynamically read all task.md files to find INTENT routing OR specific PARAMETERS
+function getTaskSchemas(specificTask = null) {
     const tasksDir = path.join(__dirname, 'tasks');
-    const tasks = getAvailableTasks();
+    const tasks = specificTask ? [specificTask] : getAvailableTasks();
     let descriptions = "";
     
     for (const task of tasks) {
         const mdPath = path.join(tasksDir, task, 'task.md');
         if (fs.existsSync(mdPath)) {
-            descriptions += `\nTask ID: ${task}\nDescription: ${fs.readFileSync(mdPath, 'utf8').trim()}\n---`;
+            descriptions += `\nTask ID: ${task}\n${fs.readFileSync(mdPath, 'utf8').trim()}\n---`;
         }
     }
     return descriptions;
 }
 
 // ==========================================
-// 3. AI & VOICE MICROSERVICES
+// 4. AI & VOICE MICROSERVICES
 // ==========================================
 async function transcribeVoice(fileUrl) {
     const audioUrl = process.env.STT_TTS_URL.replace(/\/$/, ""); 
@@ -83,34 +116,67 @@ async function transcribeVoice(fileUrl) {
     return result.text;
 }
 
-async function parseIntent(userInput) {
-    // 🚀 UPDATED: Pointing to your new system_prompt.md in the root directory
+async function converseWithAI(chatId, userInput) {
+    const session = getSession(chatId);
+    
     const promptPath = path.join(__dirname, 'system_prompt.md');
     if (!fs.existsSync(promptPath)) throw new Error("Missing system_prompt.md");
     
-    let promptTemplate = fs.readFileSync(promptPath, 'utf8');
-    promptTemplate = promptTemplate.replace('{{AVAILABLE_TASKS}}', getTaskDescriptions());
-    promptTemplate = promptTemplate.replace('{{USER_INPUT}}', userInput);
+    // We only feed the specific task schema if we are locked into a task, otherwise feed all of them for routing
+    const schemaToFeed = session.targetTask ? getTaskSchemas(session.targetTask) : getTaskSchemas();
+    
+    let basePrompt = fs.readFileSync(promptPath, 'utf8');
+    basePrompt = basePrompt.replace('{{AVAILABLE_TASKS}}', schemaToFeed);
 
-    const response = await fetch(process.env.OLLAMA_URL, {
+    // Initialize conversation array if empty
+    if (session.history.length === 0) {
+        session.history.push({ role: "system", content: basePrompt });
+    } else {
+        // Always ensure the system prompt is up to date with the latest schema
+        session.history[0].content = basePrompt;
+    }
+
+    session.history.push({ role: "user", content: userInput });
+
+    // Sliding Window: Keep system prompt + last 8 messages to prevent context overflow
+    if (session.history.length > 9) {
+        session.history = [session.history[0], ...session.history.slice(-8)];
+    }
+
+    // 🚀 THE FIX: Dynamically switch to the conversational endpoint!
+    const chatUrl = process.env.OLLAMA_URL.replace('/api/generate', '/api/chat');
+
+    const response = await fetch(chatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             model: process.env.OLLAMA_MODEL || "gemma",
-            prompt: promptTemplate,
+            messages: session.history, 
             format: "json",
             stream: false,
-            options: { temperature: 0 } // Strict routing mode
+            options: { temperature: 0 } 
         })
     });
     
     if (!response.ok) throw new Error("Ollama connection failed");
+    
     const data = await response.json();
-    return JSON.parse(data.response.trim());
+    
+    // Safety check in case the API responds weirdly
+    if (!data.message || !data.message.content) {
+        throw new Error(`Unexpected Ollama response format: ${JSON.stringify(data)}`);
+    }
+
+    const aiResponseText = data.message.content.trim();
+    
+    // Save AI response to memory
+    session.history.push({ role: "assistant", content: aiResponseText });
+    
+    return JSON.parse(aiResponseText);
 }
 
 // ==========================================
-// 4. GATEWAY INITIALIZATION & CHATOPS
+// 5. GATEWAY INITIALIZATION & CHATOPS
 // ==========================================
 async function startGateway() {
     log("==================================================");
@@ -127,24 +193,28 @@ async function startGateway() {
     log(`🤖 Telegram Bot connected and polling...`);
 
     // --- CORE EXECUTION ENGINE ---
-    // Extracted so both /run and the Buttons can use it!
-    function spawnAgent(taskName, chatId) {
+    // 🚀 NEW: Accepts a JSON payload and safely base64 encodes it for CLI transit
+    function spawnAgent(taskName, chatId, payloadObj = {}) {
+        const encodedPayload = Buffer.from(JSON.stringify(payloadObj)).toString('base64');
+        
         bot.sendMessage(chatId, `⏳ Spawning *${taskName.toUpperCase()}*...\n\n> _Initializing..._`, { parse_mode: 'Markdown' })
         .then((sentMsg) => {
             const messageId = sentMsg.message_id;
             let finalResult = "", artifactPath = "", summaryReport = "";
 
-            const childProcess = exec(`node agent.js ${taskName}`);
+            // Inject the base64 payload as the second argument
+            const childProcess = exec(`node agent.js ${taskName} ${encodedPayload}`);
 
             childProcess.stdout.on('data', (data) => {
                 const output = data.toString();
-                const finalMatch = output.match(/\[GATEWAY_RESPONSE\]:\s*(.*)/);
+
+                const finalMatch = output.match(/.*\[GATEWAY_RESPONSE\]:\s*(.*)/);
                 if (finalMatch) finalResult = finalMatch[1];
 
-                const artifactMatch = output.match(/\[GATEWAY_ARTIFACT\]:\s*(.*)/);
+                const artifactMatch = output.match(/.*\[GATEWAY_ARTIFACT\]:\s*(.*)/);
                 if (artifactMatch) artifactPath = artifactMatch[1].trim();
 
-                const summaryMatch = output.match(/\[GATEWAY_SUMMARY\]:\s*(.*)/);
+                const summaryMatch = output.match(/.*\[GATEWAY_SUMMARY\]:\s*(.*)/);
                 if (summaryMatch) summaryReport = summaryMatch[1].trim();
 
                 const infoMatch = output.match(/\[INFO\]\s+(.*)/);
@@ -159,9 +229,9 @@ async function startGateway() {
                 const isCrash = finalResult.toLowerCase().includes('crashed') || code !== 0;
 
                 if (isCrash) {
-                    bot.editMessageText(`❌ *Crash:* ${finalResult || "Unknown error"}`, {
-                        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown'
-                    }).catch(() => {});
+                    bot.editMessageText(`❌ <b>Crash:</b> ${finalResult || "Unknown error (Exit Code " + code + ")"}`, {
+                        chat_id: chatId, message_id: messageId, parse_mode: 'HTML'
+                    }).catch(err => log(`🚨 Telegram Error: ${err.message}`, "ERROR"));
 
                     const screenshotsDir = path.join(__dirname, 'screenshots');
                     if (fs.existsSync(screenshotsDir)) {
@@ -178,15 +248,25 @@ async function startGateway() {
                     }
                 } else {
                     const telegramFriendlySummary = formatReport(summaryReport);
-                    const finalMessage = `✅ *Result for ${taskName.toUpperCase()}:*\n${finalResult}\n\n${telegramFriendlySummary}`;
+                    
+                    // 🚀 THE FIX: Convert Markdown asterisks to safe HTML <b> tags
+                    let htmlSummary = telegramFriendlySummary.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+                    htmlSummary = htmlSummary.replace(/\*(.*?)\*/g, '<b>$1</b>');
+
+                    const finalMessage = `✅ <b>Result for ${taskName.toUpperCase()}:</b>\n${finalResult}\n\n${htmlSummary}`;
 
                     bot.editMessageText(finalMessage, {
-                        chat_id: chatId, message_id: messageId, parse_mode: 'Markdown'
+                        chat_id: chatId, message_id: messageId, parse_mode: 'HTML'
                     }).then(() => {
                         if (artifactPath && fs.existsSync(artifactPath)) {
                             bot.sendDocument(chatId, artifactPath, { caption: `📄 AI Analysis JSON` }).catch(()=>{});
                         }
-                    }).catch(() => {});
+                    }).catch(err => {
+                        // 🚀 THE FIX: Never swallow errors again!
+                        log(`🚨 Telegram rejected the final message! Error: ${err.message}`, "ERROR");
+                        // Send a safe fallback so the UI doesn't hang
+                        bot.editMessageText(`✅ Task Complete, but Telegram rejected the formatting of the AI summary.`, {chat_id: chatId, message_id: messageId});
+                    });
                 }
             });
         });
@@ -198,18 +278,26 @@ async function startGateway() {
         const messageId = query.message.message_id;
         const data = query.data;
 
-        // Remove the buttons immediately so they can't be clicked twice
+        // Remove the buttons immediately
         bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId }).catch(()=>{});
 
         if (data.startsWith('RUN_')) {
             const taskName = data.replace('RUN_', '').toLowerCase();
-            bot.sendMessage(chatId, `🚀 Confirmation received. Initiating workflow...`);
-            spawnAgent(taskName, chatId);
+            const session = getSession(chatId);
+            
+            // Extract the payload memory before we wipe it
+            const executionPayload = session.latestPayload || {};
+            
+            bot.sendMessage(chatId, `🚀 Confirmation received. Executing with payload...`);
+            clearSession(chatId); // 🚀 Memory Wipe!
+            
+            spawnAgent(taskName, chatId, executionPayload);
         } else if (data === 'CANCEL') {
-            bot.editMessageText(`❌ Action cancelled by user.`, { chat_id: chatId, message_id: messageId }).catch(()=>{});
+            bot.editMessageText(`❌ Action cancelled. Memory cleared.`, { chat_id: chatId, message_id: messageId }).catch(()=>{});
+            clearSession(chatId); // 🚀 Memory Wipe!
         }
         
-        bot.answerCallbackQuery(query.id); // Tell Telegram we handled it
+        bot.answerCallbackQuery(query.id); 
     });
 
     // --- MESSAGE LISTENER ---
@@ -232,48 +320,73 @@ async function startGateway() {
 
         if (!text) return; 
 
-        // 2. EXPLICIT COMMANDS
+        // 2. EXPLICIT POWER-USER COMMANDS
         if (text === '/start') {
-            bot.sendMessage(chatId, "👋 Gateway online. Type /list for tasks or send a voice memo!");
+            clearSession(chatId);
+            bot.sendMessage(chatId, "👋 Gateway online. Type /list for tasks or just speak naturally!");
         } 
         else if (text === '/list') {
             const tasks = getAvailableTasks();
-            bot.sendMessage(chatId, "📋 *Available Tasks:*\n\n" + tasks.map(t => `• \`${t}\``).join('\n') + "\n\nType `/run [task]` or just ask me in plain english!", { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, "📋 *Available Tasks:*\n\n" + tasks.map(t => `• \`${t}\``).join('\n') + "\n\nType `/run [task]` or ask me to trigger one!", { parse_mode: 'Markdown' });
         } 
         else if (text.startsWith('/run ')) {
             const taskName = text.split(' ')[1]?.toLowerCase();
             if (getAvailableTasks().includes(taskName)) {
-                spawnAgent(taskName, chatId); // Explicit run, no button needed
+                clearSession(chatId); // Prevent explicit runs from bleeding into conversational memory
+                bot.sendMessage(chatId, `⚡ Fast-track execution triggered.`);
+                spawnAgent(taskName, chatId, {}); 
             } else {
                 bot.sendMessage(chatId, `⚠️ Unknown task: ${taskName}`);
             }
         }
+        else if (text === '/cancel') {
+            clearSession(chatId);
+            bot.sendMessage(chatId, "🗑️ Session memory wiped. What's next?");
+        }
         else if (text.startsWith('/')) {
-            bot.sendMessage(chatId, `⚠️ Unrecognized command. Use /run or normal text.`);
+            bot.sendMessage(chatId, `⚠️ Unrecognized command. Use /run, /cancel, or normal text.`);
         }
         
-        // 3. AI NATURAL LANGUAGE ROUTING (Text & Voice)
+        // 3. AI NATURAL LANGUAGE CONVERSATIONAL ROUTING
         else {
             try {
-                // If it wasn't voice, give them a loading indicator
-                if (!msg.voice) bot.sendMessage(chatId, `🧠 _Analyzing intent..._`, { parse_mode: 'Markdown' });
+                if (!msg.voice) bot.sendMessage(chatId, `🧠 _Thinking..._`, { parse_mode: 'Markdown' });
                 
-                const intentObj = await parseIntent(text);
+                const session = getSession(chatId);
+                const aiState = await converseWithAI(chatId, text);
 
-                if (intentObj && intentObj.task && getAvailableTasks().includes(intentObj.task.toLowerCase())) {
-                    const matchedTask = intentObj.task.toLowerCase();
+                if (aiState.status === "PIVOT") {
+                    clearSession(chatId);
+                    bot.sendMessage(chatId, aiState.reply_to_user || "Pivot understood. Memory cleared.");
+                    return;
+                }
+
+                if (aiState.status === "INCOMPLETE") {
+                    // 🚀 FIXED: Look for aiState.task
+                    if (!session.targetTask && aiState.task) {
+                         session.targetTask = aiState.task.toLowerCase();
+                    }
+                    bot.sendMessage(chatId, aiState.reply_to_user);
+                } 
+                
+                else if (aiState.status === "COMPLETE") {
+                    // Lock in the payload
+                    session.latestPayload = aiState.payload;
                     
-                    // 🚀 CHANGED: Switched to HTML parsing to prevent Markdown crashes from AI underscores
-                    bot.sendMessage(
-                        chatId, 
-                        `🤖 <b>Intent Match:</b> <code>${matchedTask}</code>\n<i>Reason:</i> ${intentObj.reason}\n\nShall I execute this?`, 
-                        { parse_mode: 'HTML', ...createConfirmButton(matchedTask) }
-                    );
-                } else {
-                    bot.sendMessage(chatId, `🤷‍♂️ I couldn't match that to a known SAP task. \n<i>(Reason: ${intentObj.reason})</i>`, { parse_mode: 'HTML' });
-                }                
+                    // 🚀 FIXED: Look for aiState.task
+                    const finalTask = session.targetTask || aiState.task || Object.keys(aiState.payload)[0];
+
+                    const confirmationMessage = `✅ **Task Ready:** <code>${finalTask}</code>\n\n` +
+                        `<b>Parameters gathered:</b>\n<pre>${JSON.stringify(aiState.payload, null, 2)}</pre>\n\n` +
+                        `<i>${aiState.reply_to_user}</i>`;
+
+                    bot.sendMessage(chatId, confirmationMessage, { 
+                        parse_mode: 'HTML', 
+                        ...createConfirmButton(finalTask) 
+                    });
+                }
             } catch (error) {
-                bot.sendMessage(chatId, `❌ AI Intent Parsing Failed: ${error.message}`);
+                bot.sendMessage(chatId, `❌ AI Processing Failed: ${error.message}`);
             }
         }
     });
