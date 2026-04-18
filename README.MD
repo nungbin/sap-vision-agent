@@ -4,11 +4,11 @@ An autonomous, self-healing Robotic Process Automation (RPA) agent for both lega
 
 This project implements a **Finite State Machine (FSM)** to achieve Level 5 autonomy, allowing the bot to organically train, test, execute, and self-heal without human micromanagement. It also features a real-time **Telegram ChatOps Gateway** with **Conversational Slot Filling**, allowing you to converse naturally with the bot to set execution parameters before approving payloads directly from your phone.
 
-> **Bin:** Hey, can you run the ST22 dump analysis for me?
+> **Human:** Hey, can you run the ST22 dump analysis for me?
 > 
 > **SAP Vision Agent:** I can certainly run the ST22 dump analysis for you. Could you please provide the start date and end date for the analysis?
 > 
-> **Bin:** From April 10th to April 14th.
+> **Human:** From April 10th to April 14th.
 > 
 > **SAP Vision Agent:** ✅ **Task Ready:** `st22`
 > `[ 🚀 Execute Task ]` `[ ❌ Cancel ]`
