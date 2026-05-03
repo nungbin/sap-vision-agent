@@ -126,11 +126,29 @@ async function run() {
     const page = await context.newPage();
 
     log("Logging into SAP WebGUI...");
-    await page.goto(process.env.SAP_WEBGUI_URL);
+    // 🟢 THE FIX: Tell goto to relax its wait conditions and extend its own timeout
+    await page.goto(process.env.SAP_WEBGUI_URL, { 
+        waitUntil: 'domcontentloaded', 
+        timeout: 60000 
+    });
+
+    // 🟢 THE FIX: Explicitly wait for the username box to become visible
+    // We give it a generous 60-second timeout to handle those brutal SAP NPL cold boots
+    log("Waiting for SAP Logon screen to render...");
+    await page.waitForSelector('#sap-user', { state: 'visible', timeout: 60000 });
+
     await page.locator('#sap-user').fill(process.env.SAP_USER);
     await page.locator('#sap-password').fill(process.env.SAP_PASS);
+    
+    log("Login submitted. Waiting for authentication to process...");
     await page.keyboard.press('Enter');
-    await page.waitForLoadState('networkidle');
+    
+    // 🟢 THE FIX: Don't look for the next screen. 
+    // Just wait for the login box to be destroyed!
+    await page.waitForSelector('#sap-user', { state: 'detached', timeout: 60000 });
+    
+    log("Authentication successful! Handing over to the FSM Orchestrator...");
+
 
     for (const task of queue) {
         const scriptName = (task.taskName || task.tcode).toLowerCase();
